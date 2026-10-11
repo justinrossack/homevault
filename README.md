@@ -35,7 +35,7 @@ Schnelle, einfache Foto-, Video- und Datei-Verwaltung für den Heimserver – ei
 curl -fsSL https://raw.githubusercontent.com/justinrossack/homevault/main/install.sh | sudo bash
 ```
 
-Das Skript installiert bei Bedarf Docker, fragt nach dem Datenordner und ob der Festplatten-Spiegel eingeschaltet werden soll, lädt die fertigen Images (x86_64 und ARM64) und startet alles. Dann im Browser `http://<server-ip>:8080` öffnen – der Einrichtungsassistent startet.
+Für Debian 12/13 und Ubuntu 24.04. Das Skript installiert bei Bedarf Docker mit Compose v2, fragt nach dem Datenordner und ob der Festplatten-Spiegel eingeschaltet werden soll, lädt die fertigen Images (x86_64 und ARM64) und startet alles. Dann im Browser `http://<server-ip>:8080` öffnen – der Einrichtungsassistent startet.
 
 **Aktualisieren:** denselben Befehl noch einmal ausführen (oder in `/opt/homevault`: `docker compose pull && docker compose up -d`). Daten und Einstellungen bleiben erhalten. Eine bestimmte Version festhalten: `HOMEVAULT_VERSION=1.2.3` in der `.env`.
 
@@ -73,11 +73,15 @@ DISK_AGENT_TOKEN=<openssl rand -hex 24>
 - Vorhandene Daten aus `MEDIA_DIR` werden auf den Spiegel kopiert, homevault startet danach einmal neu.
 - Der Platten-Dienst läuft als eigener Container mit Zugriff auf `/dev`; die Weboberfläche selbst hat keine Sonderrechte.
 - Fehlt beim Start eine Platte, startet der Server im **Notbetrieb**; die Oberfläche warnt und bietet „Ersetzen“ an.
+- Lässt sich der Spiegel gar nicht einhängen (zu viele Platten fehlen), startet die Oberfläche **schreibgeschützt** mit Warnung, das Netzlaufwerk bleibt aus. Sobald die Platten wieder da sind, hängt der Platten-Dienst den Spiegel ein und homevault startet normal neu.
+- Während der Spiegel eingerichtet wird, ist das Netzlaufwerk kurz pausiert.
 - `MEDIA_DIR` muss auf einem „shared mount“ liegen (bei Debian/Ubuntu mit systemd ist `/` das automatisch).
 
 ### Ohne LibreOffice (kleineres Image)
 
 Die Office-Vorschau braucht ca. 1 GB im Image. Wer darauf verzichtet, baut selbst: `docker compose -f docker-compose.yml -f docker-compose.build.yml build --build-arg OFFICE=false`.
+
+Selbst gebaute Images nicht mit `install.sh` oder `docker compose pull` aktualisieren (das lädt wieder das offizielle Image), sondern: `git pull` und denselben `build`-Befehl erneut, dann `docker compose up -d`.
 
 ## Ordnerstruktur
 
@@ -113,6 +117,8 @@ Browser-Uploads vom iPhone enthalten nur das Foto. Für komplette Live Photos ü
 
 GitHub Actions baut bei jedem Push auf `main` die Images für x86_64 und ARM64 und lädt sie nach `ghcr.io/justinrossack/homevault`, `…/homevault-disks` und `…/homevault-samba` (Tag `latest`). Eine Version veröffentlichen: `git tag v1.0.0 && git push --tags` (Tags `1.0.0`, `1.0`, `1`).
 
+Einmalig nach dem ersten Lauf: auf GitHub unter **Packages** die drei Pakete öffnen → *Package settings* → *Change visibility* → **Public**. Neue Pakete sind sonst privat und `docker compose pull` schlägt bei allen anderen fehl.
+
 ## Tests
 
 - `cargo test` – Unit-Tests (Pfadschutz, Index, Backup-Zeitplan, Archive …)
@@ -146,5 +152,4 @@ Lokal für HEIC, Videos, Dokumente und Backup: `brew install libheif ffmpeg popp
 | `TZ` | `Europe/Berlin` | Zeitzone für Backup-Zeitpläne |
 | `INDEX_INTERVAL_MINUTES` | `10` | Wie oft der Medien-Index nach Änderungen sucht |
 | `COMPOSE_PROFILES`, `MEDIA_PROPAGATION`, `DISK_AGENT_URL`, `DISK_AGENT_TOKEN` | – | Festplatten-Verwaltung (siehe oben) |
-| `ADMIN_USER`, `ADMIN_PASSWORD` | – | Optional: ersten Admin ohne Assistent anlegen |
-| `CONFIG_DIR` | `DATA_DIR/.homevault` | Datenbank und SMB-Logins |
+| `ADMIN_USER`, `ADMIN_PASSWORD` | `admin`, – | Optional: ersten Admin ohne Assistent anlegen (nur wenn noch kein Benutzer existiert) |

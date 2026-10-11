@@ -55,9 +55,9 @@ pub async fn upload(
             return Err(AppError::BadRequest(format!("Ungültiger Dateiname: {raw_name}")));
         }
 
-        let tmp = dir.join(format!(".upload-{:016x}.part", rand::thread_rng().r#gen::<u64>()));
+        let tmp = TempFile(dir.join(format!(".upload-{:016x}.part", rand::thread_rng().r#gen::<u64>())));
         let result = async {
-            let mut out = BufWriter::with_capacity(1 << 20, tokio::fs::File::create(&tmp).await?);
+            let mut out = BufWriter::with_capacity(1 << 20, tokio::fs::File::create(&tmp.0).await?);
             while let Some(chunk) = field
                 .chunk()
                 .await
@@ -70,19 +70,11 @@ pub async fn upload(
                 }
             }
             out.flush().await?;
-            let target = free_name(&dir, &name).await;
-            tokio::fs::rename(&tmp, &target).await?;
-            Ok::<_, AppError>(target)
+            Ok::<_, AppError>(move_to_free_name(&tmp.0, &dir, &name).await?)
         }
         .await;
-
-        match result {
-            Ok(target) => saved.push(r.virtual_of(&target)),
-            Err(e) => {
-                let _ = tokio::fs::remove_file(&tmp).await;
-                return Err(e);
-            }
-        }
+        // Temp-Datei wird beim Verlassen entfernt (auch bei Abbruch der Verbindung)
+        saved.push(r.virtual_of(&result?));
     }
     if !saved.is_empty() {
         state.index.request_scan();
@@ -90,21 +82,63 @@ pub async fn upload(
     Ok(Json(json!({ "saved": saved })))
 }
 
-/// "bild.jpg" -> "bild (1).jpg", falls schon vorhanden.
-pub async fn free_name(dir: &Path, name: &str) -> PathBuf {
-    let candidate = dir.join(name);
-    if tokio::fs::symlink_metadata(&candidate).await.is_err() {
-        return candidate;
+/// Entfernt die Temp-Datei, wenn der Upload nicht fertig wird – auch wenn
+/// der Browser die Verbindung abbricht und die Anfrage verworfen wird.
+struct TempFile(PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        // nach dem Umbenennen gibt es sie nicht mehr
+        let _ = std::fs::remove_file(&self.0);
     }
+}
+
+/// "bild.jpg", "bild (1).jpg", "bild (2).jpg" …
+fn name_candidates(name: &str) -> impl Iterator<Item = String> + '_ {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
         _ => (name, String::new()),
     };
-    for i in 1.. {
-        let c = dir.join(format!("{stem} ({i}){ext}"));
-        if tokio::fs::symlink_metadata(&c).await.is_err() {
-            return c;
+    std::iter::once(name.to_owned()).chain((1..).map(move |i| format!("{stem} ({i}){ext}")))
+}
+
+/// Verschiebt `from` unter dem ersten freien Namen nach `dir`. Überschreibt
+/// nie etwas, auch nicht, wenn gleichzeitig eine gleichnamige Datei ankommt.
+pub async fn move_to_free_name(from: &Path, dir: &Path, name: &str) -> std::io::Result<PathBuf> {
+    let (from, dir, name) = (from.to_owned(), dir.to_owned(), name.to_owned());
+    tokio::task::spawn_blocking(move || {
+        for candidate in name_candidates(&name).take(100_000) {
+            let to = dir.join(candidate);
+            match rename_noreplace(&from, &to) {
+                Ok(()) => return Ok(to),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(std::io::Error::other("kein freier Dateiname gefunden"))
+    })
+    .await?
+}
+
+/// Umbenennen, aber nur wenn das Ziel noch nicht existiert.
+pub fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let (f, t) = (std::ffi::CString::new(from.as_os_str().as_bytes())?, std::ffi::CString::new(to.as_os_str().as_bytes())?);
+        const RENAME_NOREPLACE: libc::c_uint = 1;
+        let r = unsafe { libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, f.as_ptr(), libc::AT_FDCWD, t.as_ptr(), RENAME_NOREPLACE) };
+        if r == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        // Dateisystem ohne renameat2: wie unten prüfen und umbenennen
+        if !matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS)) {
+            return Err(e);
         }
     }
-    unreachable!()
+    if std::fs::symlink_metadata(to).is_ok() {
+        return Err(std::io::ErrorKind::AlreadyExists.into());
+    }
+    std::fs::rename(from, to)
 }

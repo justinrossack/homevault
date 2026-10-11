@@ -36,6 +36,16 @@ const navBtn = {
 
 const fill = { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' } as const
 
+/** Tasten gehören gerade jemand anderem: Eingabefeld, Videosteuerung oder ein Dialog über der Lightbox */
+function keysBlocked(e: KeyboardEvent, root: HTMLElement | null) {
+  const t = e.target
+  if (t instanceof Element && t.closest('input, textarea, select, video, audio, [contenteditable]:not([contenteditable="false"])'))
+    return true
+  // zuletzt geöffnetes Modal liegt oben
+  const modals = document.querySelectorAll('.MuiModal-root')
+  return !root || modals[modals.length - 1] !== root
+}
+
 export default function Lightbox({ items, index, onIndex, onToggleFavorite, onAddToAlbum, onDelete, onShare, source = userSource }: Props) {
   const item = index !== null ? items[index] : undefined
   const go = useCallback(
@@ -43,15 +53,18 @@ export default function Lightbox({ items, index, onIndex, onToggleFavorite, onAd
     [index, items.length, onIndex],
   )
 
+  const open = !!item
+  const root = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (index === null) return
+    if (!open) return
     const onKey = (e: KeyboardEvent) => {
+      if (keysBlocked(e, root.current)) return
       if (e.key === 'ArrowLeft') go(-1)
       if (e.key === 'ArrowRight') go(1)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [index, go])
+  }, [open, go])
 
   // nächstes Bild vorladen, damit das Weiterblättern sofort geht
   useEffect(() => {
@@ -62,7 +75,17 @@ export default function Lightbox({ items, index, onIndex, onToggleFavorite, onAd
   const download = item ? source.download(item) : null
 
   return (
-    <Dialog fullScreen open={!!item} onClose={() => onIndex(null)} slotProps={{ paper: { sx: { bgcolor: '#000' } } }}>
+    <Dialog
+      fullScreen
+      ref={root}
+      open={open}
+      onClose={(e, reason) => {
+        // Esc in Eingabefeldern oder Videosteuerung nicht zum Schließen nutzen
+        if (reason === 'escapeKeyDown' && keysBlocked((e as React.KeyboardEvent).nativeEvent, root.current)) return
+        onIndex(null)
+      }}
+      slotProps={{ paper: { sx: { bgcolor: '#000' } } }}
+    >
       {item && (
         <Box sx={{ position: 'relative', height: '100dvh', overflow: 'hidden' }}>
           {!isMedia(item) ? (

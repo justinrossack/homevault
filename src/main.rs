@@ -82,8 +82,12 @@ async fn main() {
 
     // Erst loslegen, wenn der Speicherverbund eingehängt ist
     let disk_client = disks::DiskClient::from_env();
+    let mut pool_missing = false;
     if let Some(c) = disk_client.clone() {
-        let _ = tokio::task::spawn_blocking(move || c.wait_until_ready()).await;
+        pool_missing = !tokio::task::spawn_blocking(move || c.wait_until_ready()).await.unwrap_or(true);
+        if pool_missing {
+            tracing::error!("Speicherverbund ist nicht eingehängt – nur lesender Notbetrieb, bis die Platten wieder da sind");
+        }
     }
 
     let data_dir = PathBuf::from(env_or("DATA_DIR", "/data"));
@@ -146,6 +150,7 @@ async fn main() {
         data_dir.clone(),
         cache_dir.clone(),
         Duration::from_secs(interval.max(1) * 60),
+        pool_missing,
     );
     trash::start_cleanup(db.clone(), data_dir.clone());
     let transcoder = video::Transcoder::start(db.clone(), data_dir.clone(), cache_dir.clone());
@@ -163,7 +168,8 @@ async fn main() {
         backups,
         transcoder,
         disks: disk_client.clone(),
-        maintenance: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        // fehlt der Speicherverbund, liegt unter /data nur der alte Ordner
+        maintenance: Arc::new(std::sync::atomic::AtomicBool::new(pool_missing)),
         thumb_limit: Arc::new(Semaphore::new(workers)),
     };
 

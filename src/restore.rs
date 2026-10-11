@@ -329,6 +329,10 @@ pub async fn setup_restore(State(state): State<AppState>, Json(mut b): Json<Targ
 
 /// Fortschritt der Komplett-Wiederherstellung (ohne Anmeldung, nur während der Einrichtung).
 pub async fn setup_restore_status(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    // Nach der Einrichtung nichts mehr verraten (Pfade, Fehlertexte)
+    if state.db.call(|c| Ok(crate::users::user_count(c)?)).await? > 0 {
+        return Ok(Json(json!({ "running": null, "result": null, "done": true })));
+    }
     let progress = state.backups.progress.lock().unwrap().clone();
     let result = state.backups.restore_result.lock().unwrap().clone();
     Ok(Json(json!({ "running": progress, "result": result })))

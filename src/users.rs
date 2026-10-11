@@ -486,6 +486,20 @@ pub async fn delete(
     if name == me.name {
         return Err(AppError::BadRequest("Du kannst dich nicht selbst löschen".into()));
     }
+    // Seinen privaten Papierkorb endgültig leeren, sonst bleiben die
+    // Dateien unsichtbar liegen
+    let n = name.clone();
+    let trash_ids: Vec<i64> = state
+        .db
+        .call(move |c| {
+            Ok(c.prepare("SELECT t.id FROM trash t JOIN users u ON u.id = t.owner_id WHERE u.name = ?")?
+                .query_map([&n], |r| r.get(0))?
+                .collect::<Result<_, _>>()?)
+        })
+        .await?;
+    for id in trash_ids {
+        crate::trash::purge_id(&state, id).await?;
+    }
     let config_dir = state.config_dir.clone();
     state
         .db

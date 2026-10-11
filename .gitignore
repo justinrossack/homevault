@@ -2,6 +2,7 @@
 /target
 web/node_modules
 web/dist
+*.tsbuildinfo
 
 # Lokale Konfiguration (Passwörter, Tokens) – nur die Vorlage gehört ins Repo
 .env*

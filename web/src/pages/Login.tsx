@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Alert, Box, Button, Paper, Stack, TextField, Typography } from '@mui/material'
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
-import { api } from '../api'
+import { api, ApiError } from '../api'
 
 export default function Login({ serverName, onLogin }: { serverName: string; onLogin: () => void }) {
   const [username, setUsername] = useState('')
@@ -16,8 +16,8 @@ export default function Login({ serverName, onLogin }: { serverName: string; onL
     try {
       await api.login(username, password)
       onLogin()
-    } catch {
-      setError('Benutzername oder Passwort falsch')
+    } catch (e) {
+      setError(e instanceof ApiError && e.status === 401 ? 'Benutzername oder Passwort falsch' : (e as Error).message)
       setBusy(false)
     }
   }

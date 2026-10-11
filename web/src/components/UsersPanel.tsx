@@ -40,6 +40,15 @@ import { copyText } from './ShareDialog'
 
 const GB = 1024 ** 3
 
+/** GB-Eingabe lesen: leer = unbegrenzt (0), null = keine gültige Zahl */
+function parseGb(text: string): number | null {
+  const t = text.trim().replace(',', '.')
+  if (!t) return 0
+  const v = Number(t)
+  return Number.isFinite(v) && v >= 0 ? v : null
+}
+const GB_ERROR = 'Bitte eine Zahl eingeben, z. B. 50 oder 2,5'
+
 interface Props {
   me: User
   onToast: (msg: string) => void
@@ -288,9 +297,10 @@ export default function UsersPanel({ me, onToast }: Props) {
         open={creating}
         existing={users.map((u) => u.name)}
         onClose={() => setCreating(false)}
-        onCreated={(name, password) => {
+        onCreated={(name, password, quotaError) => {
           setCreating(false)
           setCreated({ name, password })
+          if (quotaError) onToast(`Benutzer angelegt, Speicherlimit aber nicht gespeichert: ${quotaError}`)
           load()
         }}
       />
@@ -352,7 +362,7 @@ function CreateDialog({
   open: boolean
   existing: string[]
   onClose: () => void
-  onCreated: (name: string, password: string) => void
+  onCreated: (name: string, password: string, quotaError?: string) => void
 }) {
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
@@ -378,16 +388,25 @@ function CreateDialog({
         ? 'Diesen Benutzer gibt es schon'
         : ''
 
+  const gb = parseGb(quota)
+
   async function submit() {
+    if (gb === null) return
     setBusy(true)
     setError('')
     try {
       await api.createUser(name, password, admin)
-      const gb = Number(quota.replace(',', '.'))
-      if (gb > 0) await api.updateUser(name, { quota_bytes: Math.round(gb * GB) })
-      onCreated(name, password)
     } catch (e) {
       setError((e as Error).message)
+      setBusy(false)
+      return
+    }
+    // Benutzer gibt es jetzt: Passwort auf jeden Fall anzeigen, Limit-Fehler getrennt melden
+    try {
+      if (gb) await api.updateUser(name, { quota_bytes: Math.round(gb * GB) })
+      onCreated(name, password)
+    } catch (e) {
+      onCreated(name, password, (e as Error).message)
     } finally {
       setBusy(false)
     }
@@ -423,7 +442,7 @@ function CreateDialog({
       <form
         onSubmit={(e) => {
           e.preventDefault()
-          if (name && !nameError && password.length >= 4) submit()
+          if (name && !nameError && password.length >= 4 && gb !== null) submit()
         }}
       >
         <DialogTitle>Benutzer hinzufügen</DialogTitle>
@@ -455,6 +474,8 @@ function CreateDialog({
               placeholder="unbegrenzt"
               value={quota}
               onChange={(e) => setQuota(e.target.value)}
+              error={gb === null}
+              helperText={gb === null ? GB_ERROR : undefined}
               slotProps={{ input: { endAdornment: <InputAdornment position="end">GB</InputAdornment> } }}
             />
           </Stack>
@@ -465,7 +486,7 @@ function CreateDialog({
             type="submit"
             variant="contained"
             startIcon={<PersonAddRoundedIcon />}
-            disabled={busy || !name || !!nameError || password.length < 4}
+            disabled={busy || !name || !!nameError || password.length < 4 || gb === null}
           >
             Anlegen
           </Button>
@@ -567,13 +588,13 @@ function QuotaDialog({ user, onClose, onSubmit }: { user: UserRow | null; onClos
   useEffect(() => {
     if (user) setGb(user.quota_bytes ? String(Math.round((user.quota_bytes / GB) * 10) / 10) : '')
   }, [user])
+  const value = parseGb(gb)
   return (
     <Dialog open={!!user} onClose={onClose} fullWidth maxWidth="xs">
       <form
         onSubmit={(e) => {
           e.preventDefault()
-          const v = Number(gb.replace(',', '.'))
-          onSubmit(gb.trim() && v > 0 ? Math.round(v * GB) : 0)
+          if (value !== null) onSubmit(Math.round(value * GB))
         }}
       >
         <DialogTitle>Speicherlimit für {user?.name}</DialogTitle>
@@ -587,12 +608,13 @@ function QuotaDialog({ user, onClose, onSubmit }: { user: UserRow | null; onClos
             value={gb}
             onChange={(e) => setGb(e.target.value)}
             slotProps={{ input: { endAdornment: <InputAdornment position="end">GB</InputAdornment> } }}
-            helperText="Gilt für Uploads in den privaten Bereich. „Gemeinsam“ zählt nicht mit."
+            error={value === null}
+            helperText={value === null ? GB_ERROR : 'Gilt für Uploads in den privaten Bereich. „Gemeinsam“ zählt nicht mit.'}
           />
         </DialogContent>
         <DialogActions>
           <Button onClick={onClose}>Abbrechen</Button>
-          <Button type="submit" variant="contained">
+          <Button type="submit" variant="contained" disabled={value === null}>
             Speichern
           </Button>
         </DialogActions>

@@ -27,12 +27,39 @@ ask() {
 [ "$(id -u)" -eq 0 ] || die "Bitte mit sudo ausführen."
 
 # --- Docker ------------------------------------------------------------
+# Compose v2 heißt je nach System anders: Debian 13 "docker-compose",
+# Ubuntu "docker-compose-v2". Debian 12 hat nur das alte v1 – dann Dockers
+# eigene Paketquelle.
+compose_pkg() {
+  local v
+  if apt-cache show docker-compose-v2 >/dev/null 2>&1; then echo docker-compose-v2; return; fi
+  v=$(apt-cache policy docker-compose 2>/dev/null | awk '/Candidate:/ {print $2}')
+  case "$v" in 2.*) echo docker-compose ;; esac
+}
+install_docker() {
+  apt-get update -qq
+  apt-get install -y -qq curl openssl >/dev/null
+  if dpkg -s docker-ce >/dev/null 2>&1; then
+    # Docker aus Dockers Paketquelle ist schon da, nur Compose fehlt
+    apt-get install -y -qq docker-compose-plugin >/dev/null
+    return
+  fi
+  local pkg
+  pkg=$(compose_pkg)
+  if [ -n "$pkg" ]; then
+    apt-get install -y -qq docker.io "$pkg" >/dev/null
+  else
+    say "Docker wird über Dockers eigene Paketquelle installiert (get.docker.com)"
+    curl -fsSL https://get.docker.com | sh
+  fi
+}
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
   say "Docker mit Compose fehlt"
-  [ "$(ask 'Docker jetzt aus den Paketquellen installieren? (j/n)' j)" = j ] || die "Docker wird benötigt."
-  apt-get update -qq
-  apt-get install -y -qq docker.io docker-compose docker-buildx curl openssl >/dev/null
+  [ "$(ask 'Docker jetzt installieren? (j/n)' j)" = j ] || die "Docker wird benötigt."
+  install_docker
   systemctl enable --now docker >/dev/null 2>&1 || true
+  docker compose version >/dev/null 2>&1 \
+    || die "Docker Compose v2 ist nach der Installation nicht verfügbar. Bitte nach https://docs.docker.com/engine/install/ installieren und das Skript erneut starten."
 fi
 
 mkdir -p "$DIR"
@@ -58,9 +85,17 @@ fi
 say "homevault wird in $DIR installiert"
 download docker-compose.yml
 download .env.example
-cp .env.example .env
+# Die .env erst am Ende an ihren Platz legen: bricht etwas ab, startet der
+# nächste Aufruf wieder als Neuinstallation (statt als Aktualisierung)
+ENV_NEW=.env.neu
+cp .env.example "$ENV_NEW"
+chmod 600 "$ENV_NEW"
 
 MEDIA=$(ask "Ordner für Fotos und Dateien" "/srv/homevault")
+case "$MEDIA" in
+  /*) ;;
+  *) die "Bitte einen absoluten Pfad angeben (beginnt mit /), z. B. /srv/homevault" ;;
+esac
 mkdir -p "$MEDIA"
 # Besitzer des Datenordners (Web-App und Netzlaufwerk laufen als dieser Benutzer)
 PUID=$(stat -c %u "$MEDIA"); PGID=$(stat -c %g "$MEDIA")
@@ -68,23 +103,27 @@ if [ "$PUID" -eq 0 ]; then
   PUID=1000; PGID=1000
   chown "$PUID:$PGID" "$MEDIA"
 fi
-sed -i "s|^MEDIA_DIR=.*|MEDIA_DIR=$MEDIA|; s|^PUID=.*|PUID=$PUID|; s|^PGID=.*|PGID=$PGID|" .env
+sed -i "s|^MEDIA_DIR=.*|MEDIA_DIR=$MEDIA|; s|^PUID=.*|PUID=$PUID|; s|^PGID=.*|PGID=$PGID|" "$ENV_NEW"
 
-if ss -ltn 2>/dev/null | grep -q ':445 '; then
+LISTEN_445=$(ss -Hltn 'sport = :445' 2>/dev/null || true)
+if [ -n "$LISTEN_445" ]; then
   echo "  Hinweis: Port 445 ist schon belegt (anderer Samba?). Das Netzlaufwerk nutzt deshalb Port 1445."
-  sed -i "s|^SMB_PORT=.*|SMB_PORT=1445|" .env
+  sed -i "s|^SMB_PORT=.*|SMB_PORT=1445|" "$ENV_NEW"
 fi
 
 if [ "$(ask 'Festplatten-Verwaltung (Spiegel/RAID, Hot-Swap) einschalten? (j/n)' n)" = j ]; then
-  sed -i 's|^#COMPOSE_PROFILES=|COMPOSE_PROFILES=|; s|^#MEDIA_PROPAGATION=|MEDIA_PROPAGATION=|; s|^#DISK_AGENT_URL=|DISK_AGENT_URL=|' .env
-  sed -i "s|^#DISK_AGENT_TOKEN=.*|DISK_AGENT_TOKEN=$(openssl rand -hex 24)|" .env
+  sed -i 's|^#COMPOSE_PROFILES=|COMPOSE_PROFILES=|; s|^#MEDIA_PROPAGATION=|MEDIA_PROPAGATION=|; s|^#DISK_AGENT_URL=|DISK_AGENT_URL=|' "$ENV_NEW"
+  sed -i "s|^#DISK_AGENT_TOKEN=.*|DISK_AGENT_TOKEN=$(openssl rand -hex 24)|" "$ENV_NEW"
   # Der Speicher wird über MEDIA_DIR eingehängt und muss für die Container sichtbar sein
   mount --make-rshared / 2>/dev/null || true
 fi
-chmod 600 .env
 
-say "Images laden und starten"
-docker compose pull
+say "Images laden"
+# mit der neuen Konfiguration laden, bevor sie gilt
+docker compose --env-file "$ENV_NEW" pull
+mv "$ENV_NEW" .env
+
+say "homevault starten"
 docker compose up -d
 
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')

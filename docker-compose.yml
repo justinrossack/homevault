@@ -13,6 +13,10 @@ services:
     environment:
       # Zeitzone für Backup-Zeitpläne
       TZ: ${TZ:-Europe/Berlin}
+      INDEX_INTERVAL_MINUTES: ${INDEX_INTERVAL_MINUTES:-10}
+      # optional: ersten Admin ohne Assistent anlegen
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       DISK_AGENT_URL: ${DISK_AGENT_URL:-}
       DISK_AGENT_TOKEN: ${DISK_AGENT_TOKEN:-}
     volumes:
@@ -34,9 +38,14 @@ services:
     depends_on:
       homevault:
         condition: service_started
+      disks:
+        condition: service_healthy
+        required: false
     environment:
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
+      # wartet mit der Freigabe, bis der Speicherverbund eingehängt ist
+      DISK_AGENT_URL: ${DISK_AGENT_URL:-}
     volumes:
       - ${MEDIA_DIR}:/data:${MEDIA_PROPAGATION:-rw}
     restart: unless-stopped

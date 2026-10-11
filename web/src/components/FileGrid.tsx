@@ -70,6 +70,7 @@ const Tile = memo(function Tile({ entry, onOpen, onMenu, onToggleSelect, isSelec
   const isSpace = !entry.path.includes('/')
   const selectable = media && !!onToggleSelect
   const longPress = useRef<number | undefined>(undefined)
+  const touching = useRef(false)
 
   const click = (ev: React.MouseEvent) => {
     // ⌘/Strg-Klick schaltet um, ⇧-Klick wählt einen Bereich (wie am Desktop)
@@ -95,10 +96,13 @@ const Tile = memo(function Tile({ entry, onOpen, onMenu, onToggleSelect, isSelec
         onContextMenu={(ev) => {
           if (!onMenu || isSpace) return
           ev.preventDefault()
+          // Android meldet langes Drücken auch als Kontextmenü – das wählt hier aber schon aus
+          if (selectable && ((ev.nativeEvent as PointerEvent).pointerType === 'touch' || touching.current)) return
           onMenu(entry, ev.currentTarget)
         }}
         // Lange drücken (Handy) startet die Auswahl
         onTouchStart={() => {
+          touching.current = true
           if (!selectable) return
           longPress.current = window.setTimeout(() => {
             longPress.current = undefined
@@ -106,7 +110,12 @@ const Tile = memo(function Tile({ entry, onOpen, onMenu, onToggleSelect, isSelec
           }, 500)
         }}
         onTouchEnd={(ev) => {
+          touching.current = false
           if (longPress.current === undefined && selectable) ev.preventDefault()
+          clearTimeout(longPress.current)
+        }}
+        onTouchCancel={() => {
+          touching.current = false
           clearTimeout(longPress.current)
         }}
         onTouchMove={() => clearTimeout(longPress.current)}

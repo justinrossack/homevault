@@ -46,6 +46,8 @@ import { ShellContext, type ShellApi } from '../shell'
 import AlbumPicker from '../components/AlbumPicker'
 import PasswordDialog from '../components/PasswordDialog'
 import ShareDialog, { type ShareTarget } from '../components/ShareDialog'
+import UploadPanel from '../components/UploadPanel'
+import { useUploads } from '../hooks/useUploads'
 import TrashView from '../views/TrashView'
 import FilesView from '../views/FilesView'
 import TimelineView from '../views/TimelineView'
@@ -88,6 +90,8 @@ export default function Shell({ user, serverName, onLogout, refreshMe }: Props) 
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null)
   const [storage, setStorage] = useState<Storage | null>(null)
   const [diskState, setDiskState] = useState<string>('ok')
+  const uploads = useUploads()
+  const { upload, onUploaded } = uploads
 
   // Admins: Warnung, wenn eine Platte fehlt oder Fehler meldet
   useEffect(() => {
@@ -157,8 +161,10 @@ export default function Shell({ user, serverName, onLogout, refreshMe }: Props) 
       deleteEntries: (entries: Entry[], onDeleted: (paths: Set<string>) => void) => setToDelete({ entries, onDeleted }),
       share: setShareTarget,
       refreshMe,
+      upload,
+      onUploaded,
     }),
-    [user, serverName, setFavorite, refreshMe],
+    [user, serverName, setFavorite, refreshMe, upload, onUploaded],
   )
 
   const nav = [
@@ -374,6 +380,7 @@ export default function Shell({ user, serverName, onLogout, refreshMe }: Props) 
           setToast(msg)
         }}
       />
+      <UploadPanel items={uploads.items} onClose={uploads.clear} />
       <Snackbar
         open={!!toast}
         autoHideDuration={3000}

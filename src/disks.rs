@@ -124,30 +124,48 @@ impl Agent {
             return;
         }
         let spec = format!("UUID={}", cfg.uuid);
-        // Platten brauchen nach dem Einschalten manchmal einen Moment
-        for attempt in 1..=30 {
+        // Platten brauchen nach dem Einschalten manchmal einen Moment. Klappt
+        // es gar nicht, meldet sich der Dienst trotzdem bereit (die Web-App
+        // startet dann schreibgeschützt mit Warnung) und versucht es weiter.
+        for attempt in 1.. {
             let _ = run("btrfs", &["device", "scan"]);
-            match run("mount", &["-o", "noatime", &spec, self.data.to_str().unwrap()]) {
+            match run("mount", &["-o", "noatime", &spec, self.data_str()]) {
                 Ok(_) => {
                     tracing::info!("Speicherverbund eingehängt");
+                    *self.last_error.lock().unwrap() = None;
                     self.ready.store(true, Ordering::SeqCst);
                     return;
                 }
                 Err(e) if attempt >= 6 => {
                     // nach ~30 s: mit fehlender Platte im Notbetrieb starten
-                    tracing::warn!("Einhängen fehlgeschlagen ({e}), versuche Notbetrieb");
-                    if run("mount", &["-o", "noatime,degraded", &spec, self.data.to_str().unwrap()]).is_ok() {
+                    if run("mount", &["-o", "noatime,degraded", &spec, self.data_str()]).is_ok() {
                         tracing::warn!("Speicherverbund im NOTBETRIEB eingehängt: eine Platte fehlt!");
+                        *self.last_error.lock().unwrap() = None;
                         self.ready.store(true, Ordering::SeqCst);
                         return;
                     }
+                    if attempt == 6 || attempt % 60 == 0 {
+                        tracing::error!("Speicherverbund kann nicht eingehängt werden ({e}), versuche es weiter");
+                    }
                     *self.last_error.lock().unwrap() = Some(format!("Speicher kann nicht eingehängt werden: {e}"));
+                    self.ready.store(true, Ordering::SeqCst);
                 }
                 Err(_) => {}
             }
             std::thread::sleep(Duration::from_secs(5));
         }
-        tracing::error!("Speicherverbund konnte nicht eingehängt werden, versuche es weiter");
+    }
+
+    /// Kurzer, öffentlicher Zustand für die Gesundheitsprüfung, die Web-App
+    /// und Samba (ohne Token).
+    fn health(&self) -> Value {
+        let job = self.job.lock().unwrap().as_ref().map(|j| j.kind.clone());
+        json!({
+            "ready": self.ready.load(Ordering::SeqCst),
+            "pool": self.config().is_some(),
+            "mounted": self.mounted().is_some(),
+            "job": job,
+        })
     }
 
     /// Geräte, die auf dem Server selbst eingehängt oder Swap sind (Systemplatte!).
@@ -626,8 +644,8 @@ async fn agent_action(State(agent): State<Arc<Agent>>, UrlPath(action): UrlPath<
 /// Startet den Platten-Dienst (eigener Container, braucht Zugriff auf /dev).
 pub async fn run_agent() {
     let token = std::env::var("DISK_AGENT_TOKEN").unwrap_or_default();
-    if token.len() < 16 {
-        eprintln!("Fehler: DISK_AGENT_TOKEN muss gesetzt sein (mindestens 16 Zeichen)");
+    if token.len() < 16 || token.starts_with("bitte") {
+        eprintln!("Fehler: DISK_AGENT_TOKEN muss ein eigenes Token sein, mindestens 16 Zeichen (z. B. openssl rand -hex 24)");
         std::process::exit(1);
     }
     let agent = Arc::new(Agent {
@@ -664,7 +682,9 @@ pub async fn run_agent() {
 
     let app = Router::new()
         .route("/health", get(|State(a): State<Arc<Agent>>| async move {
-            if a.ready.load(Ordering::SeqCst) { (StatusCode::OK, "ok") } else { (StatusCode::SERVICE_UNAVAILABLE, "wartet") }
+            let h = tokio::task::spawn_blocking(move || a.health()).await.unwrap_or(Value::Null);
+            let code = if h["ready"] == true { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+            (code, Json(h))
         }))
         .route("/status", get(|State(a): State<Arc<Agent>>| blocking_json(move || a.status())))
         .route("/{action}", post(agent_action))
@@ -713,16 +733,18 @@ impl DiskClient {
 
     /// Beim Start der Web-App warten, bis der Speicher eingehängt ist.
     /// Sonst würde sie nach einem Neustart des Servers kurz auf der leeren
-    /// Platte darunter loslegen.
-    pub fn wait_until_ready(&self) {
+    /// Platte darunter loslegen. `false`: Speicher eingerichtet, aber nicht
+    /// eingehängt – dann nur lesend starten.
+    pub fn wait_until_ready(&self) -> bool {
         for i in 0.. {
             match self.call(Method::GET, "/health", None) {
-                Ok((200, _)) => return,
+                Ok((200, h)) => return h["pool"] != true || h["mounted"] == true,
                 _ if i % 6 == 0 => tracing::info!("Warte auf den Platten-Dienst (Speicher wird eingehängt) …"),
                 _ => {}
             }
             std::thread::sleep(Duration::from_secs(5));
         }
+        unreachable!()
     }
 }
 
@@ -794,7 +816,8 @@ pub async fn action(
             .await;
     }
     let path = format!("/{action}");
-    let r = tokio::task::spawn_blocking(move || client.call(Method::POST, &path, Some(body)))
+    let c = client.clone();
+    let r = tokio::task::spawn_blocking(move || c.call(Method::POST, &path, Some(body)))
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let result = match r {
@@ -802,14 +825,39 @@ pub async fn action(
         Ok((_, v)) => Err(AppError::BadRequest(v["error"].as_str().unwrap_or("Fehler im Platten-Dienst").to_owned())),
         Err(e) => Err(AppError::Internal(e)),
     };
-    if result.is_err() && action == "create" {
-        state.maintenance.store(false, Ordering::SeqCst);
-        state.index.pause(false);
+    if action == "create" {
+        if result.is_err() {
+            end_maintenance(&state);
+        } else {
+            // Bei Erfolg startet die Web-App neu (watch_data_mount). Schlägt
+            // das Einrichten fehl, wieder normal weiterarbeiten.
+            let (state, client) = (state.clone(), client.clone());
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    let c = client.clone();
+                    let r = tokio::task::spawn_blocking(move || c.call(Method::GET, "/status", None)).await;
+                    let Ok(Ok((200, v))) = r else { continue };
+                    if v["job"].is_null() {
+                        if v["pool"]["mounted"] != true {
+                            tracing::warn!("Festplatten einrichten fehlgeschlagen: {}", v["last_error"]);
+                            end_maintenance(&state);
+                        }
+                        return;
+                    }
+                }
+            });
+        }
     }
     if result.is_ok() {
         tracing::info!("Festplatten: '{action}' gestartet von '{}'", me.name);
     }
     result
+}
+
+fn end_maintenance(state: &AppState) {
+    state.maintenance.store(false, Ordering::SeqCst);
+    state.index.pause(false);
 }
 
 /// Wartungsmodus: Während der Speicher umgezogen wird, sind nur lesende

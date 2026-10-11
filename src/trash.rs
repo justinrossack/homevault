@@ -28,7 +28,7 @@ use crate::{
     fs_api::{Kind, kind_of, live_companion},
     index, media,
     paths::{self, Resolved},
-    upload::free_name,
+    upload::move_to_free_name,
 };
 
 pub const TRASH_DIR: &str = ".papierkorb";
@@ -86,9 +86,11 @@ pub async fn move_to_trash(state: &AppState, user: &CurrentUser, r: Resolved) ->
 
     let rel_dir = format!("{TRASH_DIR}/{id}");
     let abs_dir = state.data_dir.join(&rel_dir);
+    let mut main_moved = false;
     let moved = async {
         tokio::fs::create_dir_all(&abs_dir).await?;
         tokio::fs::rename(&r.full, abs_dir.join(&name)).await?;
+        main_moved = true;
         if let Some(c) = &companion {
             tokio::fs::rename(c, abs_dir.join(c.file_name().unwrap())).await?;
         }
@@ -96,6 +98,10 @@ pub async fn move_to_trash(state: &AppState, user: &CurrentUser, r: Resolved) ->
     }
     .await;
     if let Err(e) = moved {
+        // alles zurück an seinen Platz, nichts verwaist im Papierkorb
+        if main_moved {
+            let _ = tokio::fs::rename(abs_dir.join(&name), &r.full).await;
+        }
         let _ = state.db.call(move |c| Ok(c.execute("DELETE FROM trash WHERE id = ?", [id])?)).await;
         let _ = tokio::fs::remove_dir(&abs_dir).await;
         return Err(e.into());
@@ -173,6 +179,12 @@ async fn purge(db: &Arc<Db>, data_dir: &Path, item: Item) -> Result<(), AppError
     .await
 }
 
+/// Einen Eintrag endgültig löschen (z. B. wenn sein Benutzer gelöscht wird).
+pub async fn purge_id(state: &AppState, id: i64) -> Result<(), AppError> {
+    let item = state.db.call(move |c| load_item(c, id)).await?;
+    purge(&state.db, &state.data_dir, item).await
+}
+
 /// Entfernt abgelaufene Einträge, prüft stündlich.
 pub fn start_cleanup(db: Arc<Db>, data_dir: PathBuf) {
     tokio::spawn(async move {
@@ -181,7 +193,7 @@ pub fn start_cleanup(db: Arc<Db>, data_dir: PathBuf) {
                 .call(|c| {
                     let cutoff = db::now() - trash_days(c) * 86400;
                     let ids: Vec<i64> = c
-                        .prepare("SELECT id FROM trash WHERE deleted_at < ?")?
+                        .prepare("SELECT id FROM trash WHERE trash_path != '' AND deleted_at < ?")?
                         .query_map([cutoff], |r| r.get(0))?
                         .collect::<Result<_, _>>()?;
                     ids.into_iter().map(|id| load_item(c, id)).collect::<Result<Vec<_>, _>>()
@@ -272,18 +284,23 @@ pub async fn restore(
         // Ordner wiederherstellen, falls er inzwischen gelöscht wurde
         tokio::fs::create_dir_all(&parent).await?;
         let name = original.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let target = free_name(&parent, &name).await;
-        tokio::fs::rename(state.data_dir.join(&item.trash_path), &target).await?;
+        let trashed = state.data_dir.join(&item.trash_path);
+        let target = move_to_free_name(&trashed, &parent, &name).await?;
         let target_rel = paths::relative(&state.data_dir, &target);
 
-        // Live-Video mit passendem (ggf. neuem) Namen zurücklegen
+        // Live-Video mit passendem (ggf. neuem) Namen zurücklegen, ohne ein
+        // inzwischen vorhandenes gleichnamiges Video zu überschreiben
         let mut live_move = None;
         if let (Some(lt), Some(lo)) = (&item.live_trash, &item.live_original) {
             let ext = Path::new(lo).extension().unwrap_or_default().to_string_lossy();
             let stem = target.file_stem().unwrap_or_default().to_string_lossy();
-            let live_target = parent.join(format!("{stem}.{ext}"));
-            if tokio::fs::rename(state.data_dir.join(lt), &live_target).await.is_ok() {
-                live_move = Some((lt.clone(), paths::relative(&state.data_dir, &live_target)));
+            match move_to_free_name(&state.data_dir.join(lt), &parent, &format!("{stem}.{ext}")).await {
+                Ok(live_target) => live_move = Some((lt.clone(), paths::relative(&state.data_dir, &live_target))),
+                Err(e) => {
+                    // Foto zurück in den Papierkorb, damit nichts verloren geht
+                    let _ = tokio::fs::rename(&target, &trashed).await;
+                    return Err(e.into());
+                }
             }
         }
         let (tp, tr) = (item.trash_path.clone(), target_rel.clone());
@@ -325,7 +342,7 @@ pub async fn empty(State(state): State<AppState>, Extension(user): Extension<Cur
         .db
         .call(move |c| {
             let ids: Vec<i64> = c
-                .prepare("SELECT id FROM trash WHERE space = ?1 OR owner_id = ?2")?
+                .prepare("SELECT id FROM trash WHERE trash_path != '' AND (space = ?1 OR owner_id = ?2)")?
                 .query_map(params![paths::SHARED, uid], |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
             ids.into_iter().map(|id| load_item(c, id)).collect::<Result<Vec<_>, _>>()

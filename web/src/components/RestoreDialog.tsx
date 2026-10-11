@@ -45,29 +45,51 @@ export default function RestoreDialog({
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    if (!target) return
-    setVersion('')
-    setPath('')
-    setSelected(new Set())
-    setError('')
-    api
-      .backupVersions(target.id)
-      .then((r) => setVersions(r.versions))
-      .catch((e) => setError((e as Error).message))
-  }, [target])
+  // Neues Ziel: Zustand sofort zurücksetzen, bevor geladen wird (nicht erst im Effekt)
+  const targetId = target?.id ?? null
+  const [shownId, setShownId] = useState(targetId)
+  if (shownId !== targetId) {
+    setShownId(targetId)
+    // beim Schließen stehen lassen, sonst flackert der Inhalt
+    if (targetId !== null) {
+      setVersions([])
+      setVersion('')
+      setPath('')
+      setItems(null)
+      setSelected(new Set())
+      setError('')
+    }
+  }
 
   useEffect(() => {
-    if (!target) return
+    if (targetId === null) return
+    let cancelled = false
+    api
+      .backupVersions(targetId)
+      .then((r) => !cancelled && setVersions(r.versions))
+      .catch((e) => !cancelled && setError((e as Error).message))
+    return () => {
+      cancelled = true
+    }
+  }, [targetId])
+
+  useEffect(() => {
+    if (targetId === null) return
+    // veraltete Antworten (anderer Ordner/Stand) verwerfen
+    let cancelled = false
     setItems(null)
     api
-      .backupBrowse(target.id, version, path)
-      .then((r) => setItems(r.entries))
+      .backupBrowse(targetId, version, path)
+      .then((r) => !cancelled && setItems(r.entries))
       .catch((e) => {
+        if (cancelled) return
         setItems([])
         setError((e as Error).message)
       })
-  }, [target, version, path])
+    return () => {
+      cancelled = true
+    }
+  }, [targetId, version, path])
 
   async function start() {
     if (!target) return

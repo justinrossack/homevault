@@ -16,6 +16,10 @@ export interface ShellApi {
   /** Öffnet den Teilen-Dialog */
   share: (target: ShareTarget) => void
   refreshMe: () => void
+  /** Lädt Dateien in einen Ordner hoch; läuft auch beim Wechsel der Ansicht weiter. */
+  upload: (dir: string, files: File[]) => void
+  /** Meldet jede fertig hochgeladene Datei mit ihrem Ordner. Gibt die Abmeldung zurück. */
+  onUploaded: (fn: (dir: string) => void) => () => void
 }
 
 export const ShellContext = createContext<ShellApi | null>(null)

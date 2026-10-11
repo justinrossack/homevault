@@ -14,15 +14,44 @@ export default function TimelineView() {
   const [indexing, setIndexing] = useState(false)
   const [error, setError] = useState('')
   const busy = useRef(false)
+  const count = useRef(0)
+  count.current = entries.length
 
-  const load = useCallback(async (cursor: string | null) => {
+  /** Nächste Seite anhängen */
+  const load = useCallback(async (cursor: string) => {
     if (busy.current) return
     busy.current = true
     try {
       const r = await api.timeline(cursor)
-      setEntries((prev) => (cursor ? [...prev, ...r.entries] : r.entries))
+      setEntries((prev) => [...prev, ...r.entries])
       setNext(r.next)
       setIndexing(r.indexing)
+      setError('')
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      busy.current = false
+    }
+  }, [])
+
+  /** Von vorne laden, aber mindestens so viele Einträge wie schon angezeigt (sonst springt die Ansicht) */
+  const refresh = useCallback(async () => {
+    if (busy.current) return
+    busy.current = true
+    try {
+      const want = count.current
+      let all: Entry[] = []
+      let cursor: string | null = null
+      let stillIndexing = false
+      do {
+        const r = await api.timeline(cursor)
+        all = all.concat(r.entries)
+        cursor = r.next
+        stillIndexing = r.indexing
+      } while (cursor && all.length < want)
+      setEntries(all)
+      setNext(cursor)
+      setIndexing(stillIndexing)
       setError('')
     } catch (e) {
       setError((e as Error).message)
@@ -33,15 +62,15 @@ export default function TimelineView() {
   }, [])
 
   useEffect(() => {
-    load(null)
-  }, [load])
+    refresh()
+  }, [refresh])
 
-  // Während der erste Index läuft, regelmäßig neu laden
+  // Während der erste Index läuft, regelmäßig aktualisieren
   useEffect(() => {
     if (!indexing) return
-    const t = setInterval(() => load(null), 3000)
+    const t = setInterval(refresh, 3000)
     return () => clearInterval(t)
-  }, [indexing, load])
+  }, [indexing, refresh])
 
   const loadMore = useCallback(() => {
     if (next) load(next)

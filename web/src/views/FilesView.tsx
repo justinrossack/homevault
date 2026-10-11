@@ -29,19 +29,16 @@ import FavoriteRoundedIcon from '@mui/icons-material/FavoriteRounded'
 import FavoriteBorderRoundedIcon from '@mui/icons-material/FavoriteBorderRounded'
 import PhotoAlbumOutlinedIcon from '@mui/icons-material/PhotoAlbumOutlined'
 import ShareRoundedIcon from '@mui/icons-material/ShareRounded'
-import { api, isMedia, joinPath, type Entry } from '../api'
+import { api, isMedia, joinPath, nextRemaining, type Entry } from '../api'
 import { navigate } from '../router'
 import { useShell } from '../shell'
 import FileGrid from '../components/FileGrid'
 import Lightbox from '../components/Lightbox'
 import PathBar from '../components/PathBar'
 import SelectionBar from '../components/SelectionBar'
-import UploadPanel, { type UploadItem } from '../components/UploadPanel'
 import MarqueeArea from '../components/MarqueeArea'
 import { useSelection } from '../hooks/useSelection'
 import { Empty, Loading } from './common'
-
-const PARALLEL_UPLOADS = 3
 
 type DialogState = { type: 'mkdir' } | { type: 'rename'; entry: Entry } | null
 
@@ -50,10 +47,10 @@ export default function FilesView({ path }: { path: string }) {
   const [entries, setEntries] = useState<Entry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [lightbox, setLightbox] = useState<number | null>(null)
+  // Pfad statt Index, damit die Lightbox beim Neuladen auf demselben Bild bleibt
+  const [lightboxPath, setLightboxPath] = useState<string | null>(null)
   const [menu, setMenu] = useState<{ entry: Entry; anchor: HTMLElement } | null>(null)
   const [dialog, setDialog] = useState<DialogState>(null)
-  const [uploads, setUploads] = useState<UploadItem[]>([])
   const [dragging, setDragging] = useState(false)
   // In der Übersicht (Privat/Gemeinsam) kann nichts abgelegt werden
   const atRoot = path === ''
@@ -61,18 +58,22 @@ export default function FilesView({ path }: { path: string }) {
   const pathRef = useRef(path)
   pathRef.current = path
 
+  // nur die Antwort der zuletzt gestarteten Anfrage übernehmen
+  const loadSeq = useRef(0)
   const load = useCallback(async (p: string, quiet = false) => {
+    const seq = ++loadSeq.current
+    const latest = () => seq === loadSeq.current && pathRef.current === p
     if (!quiet) setLoading(true)
     try {
       const r = await api.list(p)
-      if (pathRef.current === p) {
+      if (latest()) {
         setEntries(r.entries)
         setError('')
       }
     } catch (e) {
-      if (pathRef.current === p) setError((e as Error).message)
+      if (latest()) setError((e as Error).message)
     } finally {
-      if (pathRef.current === p) setLoading(false)
+      if (latest()) setLoading(false)
     }
   }, [])
 
@@ -80,30 +81,49 @@ export default function FilesView({ path }: { path: string }) {
 
   useEffect(() => {
     clear()
+    setLightboxPath(null)
+    setMenu(null)
+    setDialog(null)
     load(path)
   }, [path, load, clear])
+
+  // Nach Uploads gesammelt neu laden: höchstens alle 500 ms, die letzte Datei immer
+  const reloadTimer = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    const off = shell.onUploaded((dir) => {
+      if (dir !== pathRef.current || reloadTimer.current !== undefined) return
+      reloadTimer.current = window.setTimeout(() => {
+        reloadTimer.current = undefined
+        if (pathRef.current === dir) load(dir, true)
+      }, 500)
+    })
+    return () => {
+      off()
+      clearTimeout(reloadTimer.current)
+      reloadTimer.current = undefined
+    }
+  }, [shell, load])
 
   const goto = (p: string) => navigate({ view: 'files', path: p })
   // alles außer Ordnern lässt sich in der Vollbildansicht öffnen (Fotos, Videos, Dokumente …)
   const viewable = useMemo(() => entries.filter((e) => e.kind !== 'dir'), [entries])
+  const lightbox = lightboxPath === null ? -1 : viewable.findIndex((e) => e.path === lightboxPath)
+  // Eintrag ist verschwunden: Lightbox zu, damit sie nicht später von selbst wieder aufgeht
+  useEffect(() => {
+    if (lightboxPath !== null && lightbox < 0) setLightboxPath(null)
+  }, [lightboxPath, lightbox])
 
-  const open = useCallback(
-    (e: Entry) => {
-      if (e.kind === 'dir') goto(e.path)
-      else setLightbox(viewable.indexOf(e))
-    },
-    [viewable],
-  )
+  const open = useCallback((e: Entry) => {
+    if (e.kind === 'dir') goto(e.path)
+    else setLightboxPath(e.path)
+  }, [])
   const openMenu = useCallback((entry: Entry, anchor: HTMLElement) => setMenu({ entry, anchor }), [])
 
   // Gelöschtes aus der Ansicht nehmen; Lightbox bleibt beim nächsten Bild
   const removeDeleted = useCallback(
     (paths: Set<string>) => {
       setEntries((prev) => prev.filter((e) => !paths.has(e.path)))
-      setLightbox((i) => {
-        const left = viewable.filter((e) => !paths.has(e.path)).length
-        return i === null || left === 0 ? null : Math.min(i, left - 1)
-      })
+      setLightboxPath((cur) => (cur === null || !paths.has(cur) ? cur : nextRemaining(viewable, cur, paths)))
     },
     [viewable],
   )
@@ -121,35 +141,12 @@ export default function FilesView({ path }: { path: string }) {
   )
 
   // ---------- Upload ----------
-  const uploadId = useRef(0)
   function startUpload(files: FileList | File[]) {
     if (atRoot) {
       shell.toast('Bitte zuerst „Privat“ oder „Gemeinsam“ öffnen')
       return
     }
-    const dir = path
-    const list = Array.from(files)
-    if (list.length === 0) return
-    const items: UploadItem[] = list.map((f) => ({ id: ++uploadId.current, name: f.name, progress: 0, status: 'waiting' }))
-    setUploads((u) => [...u.filter((i) => i.status !== 'done'), ...items])
-    const update = (id: number, patch: Partial<UploadItem>) => setUploads((u) => u.map((i) => (i.id === id ? { ...i, ...patch } : i)))
-
-    let next = 0
-    const worker = async () => {
-      while (next < list.length) {
-        const n = next++
-        const id = items[n].id
-        update(id, { status: 'uploading' })
-        try {
-          await api.upload(dir, list[n], (progress) => update(id, { progress }))
-          update(id, { status: 'done', progress: 1 })
-          if (pathRef.current === dir) load(dir, true)
-        } catch (e) {
-          update(id, { status: 'error', error: (e as Error).message })
-        }
-      }
-    }
-    for (let i = 0; i < Math.min(PARALLEL_UPLOADS, list.length); i++) worker()
+    shell.upload(path, Array.from(files))
   }
 
   // Drag & Drop auf die ganze Ansicht
@@ -351,14 +348,13 @@ export default function FilesView({ path }: { path: string }) {
       />
       <Lightbox
         items={viewable}
-        index={lightbox}
-        onIndex={setLightbox}
+        index={lightbox < 0 ? null : lightbox}
+        onIndex={(i) => setLightboxPath(i === null ? null : (viewable[i]?.path ?? null))}
         onToggleFavorite={toggleFavorite}
         onAddToAlbum={(e) => shell.addToAlbum([e])}
         onShare={(e) => shell.share({ path: e.path, title: e.name })}
         onDelete={(e) => askDelete([e])}
       />
-      <UploadPanel items={uploads} onClose={() => setUploads([])} />
     </Box>
   )
 }

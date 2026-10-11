@@ -18,6 +18,22 @@ if [ -z "$FILES_USER" ]; then
     FILES_USER=hvfiles
 fi
 
+# Mit Festplatten-Verwaltung: erst freigeben, wenn der Speicherverbund
+# eingehängt ist. Sonst sähe Samba den alten Ordner darunter, und dort
+# Geschriebenes verschwände unter dem Spiegel.
+AGENT="${DISK_AGENT_URL:-}"
+storage_ready() {
+    [ -n "$AGENT" ] || return 0
+    h="$(wget -qO- -T 5 "$AGENT/health" 2>/dev/null)" || return 1
+    case "$h" in *'"job":"create"'*) return 1 ;; esac
+    case "$h" in *'"pool":true'*) case "$h" in *'"mounted":true'*) ;; *) return 1 ;; esac ;; esac
+    return 0
+}
+until storage_ready; do
+    echo "Warte auf den Speicherverbund (Platten-Dienst) ..."
+    sleep 5
+done
+
 until [ -s "$PASSDB" ]; do
     echo "Warte auf $PASSDB (wird von homevault angelegt) ..."
     sleep 2
@@ -40,6 +56,13 @@ sync_users
         if [ "$cur" != "$last" ]; then
             sync_users
             last="$cur"
+        fi
+        # Speicher wird gerade eingerichtet: Netzlaufwerk beenden, der
+        # Container startet neu und wartet oben, bis alles umgezogen ist
+        if [ -n "$AGENT" ] && wget -qO- -T 5 "$AGENT/health" 2>/dev/null | grep -q '"job":"create"'; then
+            echo "Festplatten werden eingerichtet – Netzlaufwerk pausiert"
+            kill -TERM $$
+            exit 0
         fi
     done
 ) &

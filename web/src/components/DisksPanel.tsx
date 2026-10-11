@@ -34,11 +34,36 @@ import { api, formatSize, type DiskInfo, type DisksStatus, type PoolDevice } fro
 
 const day = (t: number) => new Date(t * 1000).toLocaleDateString('de-DE', { day: 'numeric', month: 'long', year: 'numeric' })
 
-/** Wartet nach dem Einrichten, bis die Web-App auf dem neuen Speicher neu gestartet ist. */
-async function waitForRestart() {
-  // erst warten, bis sie weg ist, dann bis sie wieder da ist
-  for (let i = 0; i < 20 && (await api.health().catch(() => false)); i++) await new Promise((r) => setTimeout(r, 1000))
-  for (let i = 0; i < 120 && !(await api.health().catch(() => false)); i++) await new Promise((r) => setTimeout(r, 1000))
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Wartet nach „Speicher einrichten“, bis der Vorgang fertig ist und die Web-App
+ * auf dem neuen Speicher neu gestartet ist. Gibt bei einem Fehler die Meldung zurück.
+ * Kurze Aussetzer (Neustart) werden überbrückt.
+ */
+async function waitForCreate(onStatus: (s: DisksStatus) => void): Promise<string | null> {
+  let down = false
+  let finishedAt = 0
+  for (;;) {
+    await sleep(2000)
+    const s = await api.disks().catch(() => null)
+    if (!s) {
+      down = true
+      continue
+    }
+    if (!s.available || s.reachable === false) continue
+    onStatus(s)
+    if (s.job) continue
+    if (s.last_error) return s.last_error
+    // fertig: neu gestartet, wenn die Web-App zwischendurch weg war oder den Wartungsmodus verlassen hat
+    if (down || s.maintenance === false) break
+    finishedAt ||= Date.now()
+    // Neustart nicht mitbekommen, Speicher aber eingehängt: nicht ewig warten
+    if (s.pool?.mounted && Date.now() - finishedAt > 60000) break
+  }
+  // bis die Web-App wieder antwortet
+  while (!(await api.health().catch(() => false))) await sleep(1000)
+  return null
 }
 
 function profileText(profile: string, devices: number) {
@@ -128,12 +153,14 @@ export default function DisksPanel({
   const [restarting, setRestarting] = useState(false)
   const [showLocked, setShowLocked] = useState(false)
   const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
   const known = useRef<Set<string>>(new Set())
 
   const load = useCallback(() => {
     api
       .disks()
       .then((s) => {
+        setLoadError('')
         // Hot-Swap: neu eingesteckte Platten melden
         const now = new Set((s.disks ?? []).map((d) => d.path))
         if (known.current.size) {
@@ -142,7 +169,7 @@ export default function DisksPanel({
         known.current = now
         setSt(s)
       })
-      .catch((e) => setError((e as Error).message))
+      .catch((e) => setLoadError((e as Error).message))
   }, [onToast])
 
   useEffect(() => {
@@ -162,7 +189,20 @@ export default function DisksPanel({
       </Stack>
     )
   }
-  if (!st) return <CircularProgress size={24} />
+  const loadAlert = loadError && (
+    <Alert
+      severity="error"
+      sx={{ mb: 2 }}
+      action={
+        <Button color="inherit" size="small" onClick={load}>
+          Erneut versuchen
+        </Button>
+      }
+    >
+      Status konnte nicht geladen werden: {loadError}
+    </Alert>
+  )
+  if (!st) return loadAlert || <CircularProgress size={24} />
   if (!st.available) return <NotEnabled />
   if (st.reachable === false) return <Alert severity="error">Der Platten-Dienst ist nicht erreichbar: {st.error}</Alert>
 
@@ -180,7 +220,14 @@ export default function DisksPanel({
         await api.diskAction('create', { devices: p.devices.map((d) => d.path), profile: p.profile, confirm })
         setPending(null)
         setRestarting(true)
-        await waitForRestart()
+        const failed = await waitForCreate(setSt)
+        if (failed) {
+          // Server hat den Wartungsmodus beendet, Meldung steht in last_error
+          setRestarting(false)
+          onToast('Speicher einrichten fehlgeschlagen')
+          load()
+          return
+        }
         onToast('Speicher eingerichtet')
         if (onDone) onDone()
         else location.reload()
@@ -200,8 +247,20 @@ export default function DisksPanel({
 
   const diskOf = (dev: PoolDevice) => disks.find((d) => d.path === dev.path)
 
+  async function scrub() {
+    setError('')
+    try {
+      await api.diskAction('scrub')
+      onToast('Datenprüfung gestartet')
+      load()
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
   return (
     <Box>
+      {loadAlert}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
           {error}
@@ -220,7 +279,7 @@ export default function DisksPanel({
 
       {pool ? (
         <>
-          <PoolHeader st={st} />
+          <PoolHeader st={st} onScrub={scrub} />
           <Typography variant="subtitle2" sx={{ mt: 3, mb: 1 }}>
             Platten im Speicher
           </Typography>
@@ -361,7 +420,7 @@ function NotEnabled() {
   )
 }
 
-function PoolHeader({ st }: { st: DisksStatus }) {
+function PoolHeader({ st, onScrub }: { st: DisksStatus; onScrub: () => void }) {
   const pool = st.pool!
   const present = pool.devices.filter((d) => !d.missing).length
   const errors = pool.devices.reduce((a, d) => a + (d.errors ?? 0), 0)
@@ -435,7 +494,7 @@ function PoolHeader({ st }: { st: DisksStatus }) {
             ? `zuletzt am ${day(pool.last_scrub)}${pool.scrub?.errors ? ` – ${/no errors/i.test(pool.scrub.errors) ? 'keine Fehler gefunden' : pool.scrub.errors}` : ''}`
             : 'noch nie'}
         </Typography>
-        <Button size="small" disabled={pool.scrub?.running || !!st.job} onClick={() => api.diskAction('scrub')}>
+        <Button size="small" disabled={pool.scrub?.running || !!st.job} onClick={onScrub}>
           Jetzt prüfen
         </Button>
       </Stack>

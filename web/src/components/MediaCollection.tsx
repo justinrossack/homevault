@@ -8,7 +8,7 @@ import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import AdjustRoundedIcon from '@mui/icons-material/AdjustRounded'
 import FolderOpenRoundedIcon from '@mui/icons-material/FolderOpenRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
-import { api, formatTaken, parentPath, type Entry } from '../api'
+import { api, formatTaken, nextRemaining, parentPath, type Entry } from '../api'
 import { navigate } from '../router'
 import { useShell } from '../shell'
 import FileGrid from './FileGrid'
@@ -39,7 +39,13 @@ interface Props {
 /** Raster mit Lightbox, Auswahl und Menü für Fotos aus der Bibliothek. */
 export default function MediaCollection({ entries, setEntries, groupByMonth, removeWhenUnfavorited, extraAction, onEndReached }: Props) {
   const shell = useShell()
-  const [lightbox, setLightbox] = useState<number | null>(null)
+  // Pfad statt Index, damit die Lightbox beim Nachladen/Aktualisieren auf demselben Bild bleibt
+  const [lightboxPath, setLightboxPath] = useState<string | null>(null)
+  const lightbox = lightboxPath === null ? -1 : entries.findIndex((e) => e.path === lightboxPath)
+  // Eintrag ist verschwunden: Lightbox zu, damit sie nicht später von selbst wieder aufgeht
+  useEffect(() => {
+    if (lightboxPath !== null && lightbox < 0) setLightboxPath(null)
+  }, [lightboxPath, lightbox])
   const [menu, setMenu] = useState<{ entry: Entry; anchor: HTMLElement } | null>(null)
   const { selected, selectedEntries, toggle, clear, beginMarquee, marquee } = useSelection(entries)
 
@@ -59,22 +65,21 @@ export default function MediaCollection({ entries, setEntries, groupByMonth, rem
     async (e: Entry) => {
       if (await shell.setFavorite([e], !e.favorite)) {
         // in der Lightbox bleiben, auch wenn der Eintrag aus den Favoriten fällt
-        if (removeWhenUnfavorited && e.favorite) setLightbox(null)
+        if (removeWhenUnfavorited && e.favorite) setLightboxPath(null)
         applyFavorite([e], !e.favorite)
       }
     },
     [shell, applyFavorite, removeWhenUnfavorited],
   )
 
-  const open = useCallback((e: Entry) => setLightbox(entries.indexOf(e)), [entries])
+  const open = useCallback((e: Entry) => setLightboxPath(e.path), [])
   const openMenu = useCallback((entry: Entry, anchor: HTMLElement) => setMenu({ entry, anchor }), [])
   // Gelöschtes aus der Ansicht nehmen; Lightbox bleibt beim nächsten Bild
   const removeDeleted = useCallback(
     (paths: Set<string>) => {
       setEntries((prev) => {
-        const next = prev.filter((e) => !paths.has(e.path))
-        setLightbox((i) => (i === null || next.length === 0 ? null : Math.min(i, next.length - 1)))
-        return next
+        setLightboxPath((cur) => (cur === null || !paths.has(cur) ? cur : nextRemaining(prev, cur, paths)))
+        return prev.filter((e) => !paths.has(e.path))
       })
     },
     [setEntries],
@@ -196,8 +201,8 @@ export default function MediaCollection({ entries, setEntries, groupByMonth, rem
 
       <Lightbox
         items={entries}
-        index={lightbox}
-        onIndex={setLightbox}
+        index={lightbox < 0 ? null : lightbox}
+        onIndex={(i) => setLightboxPath(i === null ? null : (entries[i]?.path ?? null))}
         onToggleFavorite={toggleFavorite}
         onAddToAlbum={(e) => shell.addToAlbum([e])}
         onShare={(e) => shell.share({ path: e.path, title: e.name })}

@@ -13,7 +13,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{AppState, auth::CurrentUser, error::AppError, index, library, paths};
+use crate::{AppState, auth::CurrentUser, error::AppError, index, library, paths, upload};
 
 #[derive(Deserialize)]
 pub struct PathQuery {
@@ -284,6 +284,10 @@ pub async fn rename(
             let ext = video.extension().unwrap_or_default().to_string_lossy().into_owned();
             let stem = to.file_stem().unwrap_or_default().to_string_lossy().into_owned();
             let target = to.with_file_name(format!("{stem}.{ext}"));
+            // z. B. „a.jpg“ -> „b.mov“: das Video würde danach das Foto überschreiben
+            if target == to {
+                return Err(AppError::Conflict("Dieser Name gehört zum Live-Video des Fotos".into()));
+            }
             if target != video && exists(&target).await {
                 return Err(AppError::Conflict(format!(
                     "{} existiert bereits",
@@ -295,11 +299,22 @@ pub async fn rename(
         None => None,
     };
 
-    tokio::fs::rename(&from, &to).await?;
+    let (f, t) = (from.clone(), to.clone());
+    tokio::task::spawn_blocking(move || upload::rename_noreplace(&f, &t))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => AppError::Conflict("Ziel existiert bereits".into()),
+            _ => e.into(),
+        })?;
     let mut moves = vec![(paths::relative(&state.data_dir, &from), paths::relative(&state.data_dir, &to))];
     if let Some((video, target)) = companion {
-        tokio::fs::rename(&video, &target).await?;
-        moves.push((paths::relative(&state.data_dir, &video), paths::relative(&state.data_dir, &target)));
+        // schlägt das fehl, bleibt das Video unter altem Namen liegen (der Index folgt trotzdem dem Foto)
+        let (v, t) = (video.clone(), target.clone());
+        match tokio::task::spawn_blocking(move || upload::rename_noreplace(&v, &t)).await {
+            Ok(Ok(())) => moves.push((paths::relative(&state.data_dir, &video), paths::relative(&state.data_dir, &target))),
+            _ => tracing::warn!("Live-Video {} konnte nicht umbenannt werden", video.display()),
+        }
     }
     // Index sofort nachziehen, damit Favoriten und Alben erhalten bleiben
     state

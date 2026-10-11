@@ -1,6 +1,6 @@
 # Testbericht homevault
 
-**Ergebnis: 124 von 124 Tests bestanden.**  
+**Ergebnis: 133 von 133 Tests bestanden.**  
 Getestet am 11. Oktober 2026 auf einem frisch installierten Debian 13, Installation genau nach README.
 
 ## Fazit
@@ -29,7 +29,7 @@ Die Punkte unter „Nicht getestet“ sollten beim ersten Einsatz auf echter Har
 
 1. `tests/debian-server.sh` installiert Docker aus den Debian-Quellen, legt Datenordner und drei Test-Platten an und installiert homevault nach README (`.env` aus der Vorlage) und baut die Images dabei aus dem aktuellen Quellcode (`docker-compose.build.yml`), damit genau dieser Stand getestet wird.
 2. `tests/e2e.sh` prüft jede Funktion über dieselben Schnittstellen, die Weboberfläche und Netzlaufwerk benutzen, und vergleicht Dateien bytegenau.
-3. Zusätzlich: 23 Unit-Tests (`cargo test`), TypeScript-Prüfung und Bedienung im Browser (Einrichtungsassistent, Rahmenauswahl, Vorschauen, Einstellungen, Festplatten-Seite).
+3. Zusätzlich: 23 Unit-Tests (`cargo test`), TypeScript-Prüfung und Bedienung im Browser (Einrichtungsassistent, Rahmenauswahl, Vorschauen, Einstellungen, Festplatten-Seite, Vollbildansicht mit Tastatur, Benutzer anlegen).
 
 ## Ergebnisse
 
@@ -125,6 +125,7 @@ Hochladen, Ordner, Umbenennen, Streaming, Sicherheit gegen Pfad-Ausbruch und Sch
 | E8 | Ausbruch mit ../ wird blockiert | ✅ bestanden |
 | E9 | Fremder privater Ordner nicht sichtbar | ✅ bestanden |
 | E10 | Hochgeladene HTML-Datei läuft in Sandbox | ✅ bestanden |
+| E11 | Gleichzeitige Uploads gleichen Namens: keiner überschreibt | ✅ bestanden |
 
 ### F Fotos & Videos
 
@@ -139,6 +140,7 @@ Echte Testdateien: JPEG mit EXIF-Datum, HEIC, Live Photo (HEIC + HEVC-MOV), HEVC
 | F4 | Live Photo: Foto + MOV werden verknüpft | ✅ bestanden |
 | F5 | Live Photo: MOV wird nicht einzeln angezeigt | ✅ bestanden |
 | F6 | Live-Video wird als H.264 geliefert | ✅ bestanden |
+| F11 | Umbenennen auf den Namen des Live-Videos wird abgelehnt | ✅ bestanden |
 | F7 | H.264-Video wird direkt abgespielt | ✅ bestanden |
 | F8 | HEVC-Video wird für alle Browser umgewandelt | ✅ bestanden |
 | F9 | Umgewandeltes Video ist abspielbar | ✅ bestanden |
@@ -259,6 +261,7 @@ Speicher-Übersicht, Funktionsprüfung, Medien-Index.
 | M2 | Belegung pro Benutzer | ✅ bestanden |
 | M3 | Vorschau-Funktionen verfügbar (Office, PDF) | ✅ bestanden |
 | M4 | Medien-Index ohne Fehler | ✅ bestanden |
+| M5 | Wiederherstellungs-Status nach der Einrichtung nicht mehr öffentlich | ✅ bestanden |
 
 ### N Festplatten: Ausfall, Notbetrieb, Tausch (Hot-Swap)
 
@@ -278,6 +281,20 @@ Server aus, eine Platte entfernt, Server an. Dann Tausch gegen eine neue Platte,
 | N20 | Dritte Platte hinzufügen (Erweitern) | ✅ bestanden |
 | N21 | Spiegel hat jetzt 3 Platten | ✅ bestanden |
 
+### N Festplatten: alle Platten fehlen beim Start
+
+Server aus, alle Platten des Spiegels entfernt, Server an. homevault darf dann nicht auf den alten Ordner unter dem Spiegel schreiben. Danach werden die Platten wieder eingesteckt, ohne Neustart von Hand.
+
+
+| Nr. | Test | Ergebnis |
+|---|---|---|
+| N22 | Oberfläche startet trotzdem | ✅ bestanden |
+| N23 | …aber nur lesend (Notbetrieb gemeldet) | ✅ bestanden |
+| N24 | Netzlaufwerk bleibt aus, solange der Spiegel fehlt | ✅ bestanden |
+| N25 | Platten wieder da: Spiegel wird von selbst eingehängt | ✅ bestanden |
+| N26 | Schreiben wieder möglich | ✅ bestanden |
+| N27 | Netzlaufwerk wieder erreichbar | ✅ bestanden |
+
 ## Gefundene und behobene Fehler
 
 Der erste Durchlauf ergab 118 von 124. Die Abweichungen:
@@ -293,6 +310,42 @@ Bei der Entwicklung vorher zusätzlich gefunden und behoben:
 - Wieder eingesteckte, früher entfernte Platte wurde fälschlich als Teil des Spiegels angezeigt: wird jetzt als „frühere Platte“ erkannt und kann neu verwendet werden.
 - Vorschaubilder für PDF/Word schlugen wegen eines Dateinamens fehl (pdftoppm hängt die Endung selbst an).
 
+## Code-Prüfung vor der Veröffentlichung
+
+Nach dem ersten grünen Durchlauf wurde der gesamte Code noch einmal gezielt auf Fehler durchgesehen: Backend (Sicherheit, Datenverlust, gleichzeitige Zugriffe), Oberfläche (Abläufe, Zustände) sowie Docker, Installationsskript und GitHub Actions. Gefunden wurden keine Sicherheitslücken wie Pfad-Ausbrüche, fremde Privat-Ordner oder Befehlsinjektion, aber 38 Fehler in Randfällen. 37 sind behoben. Einer entfällt: ARM-Runner gibt es bei GitHub kostenlos nur für öffentliche Repositories, und homevault ist öffentlich. Für die wichtigsten gibt es neue Tests (E11, F11, M5, N22–N27).
+
+**Datensicherheit**
+- Die Festplatten fehlen beim Start ganz: Früher blieb die Oberfläche für immer unerreichbar. Jetzt startet sie schreibgeschützt mit Warnung, und das Netzlaufwerk bleibt aus (sonst hätte es den alten Ordner unter dem Spiegel gezeigt). Sobald die Platten wieder da sind, hängt der Platten-Dienst den Spiegel selbst ein und alles läuft wieder normal (N22–N27).
+- Das Einrichten des Spiegels schlägt fehl: Früher blieb homevault dauerhaft im Wartungsmodus. Jetzt geht es normal weiter. Während des Umzugs pausiert auch das Netzlaufwerk, damit nichts verloren geht.
+- Medien-Index: Ein kurz unlesbarer Ordner (z. B. Plattenfehler) oder ein gleichzeitiges Löschen/Wiederherstellen konnte Favoriten, Alben und Teilen-Links löschen. Jetzt wird in diesem Fall nichts als gelöscht gewertet.
+- Gleichzeitige Uploads gleichen Namens überschreiben sich nicht mehr gegenseitig (atomare Namensvergabe, E11).
+- Das Wiederherstellen aus dem Papierkorb überschreibt kein neueres Live-Video gleichen Namens mehr.
+- Wird ein Foto auf den Namen seines eigenen Live-Videos umbenannt, ging es früher verloren. Das wird jetzt abgelehnt (F11).
+- Abgebrochene Uploads hinterlassen keine unsichtbaren Reste mehr, die das Speicherlimit belegen. Wird ein Benutzer gelöscht, wird auch sein privater Papierkorb geleert.
+- Ein doppelt gestarteter Backup wird jetzt zuverlässig abgelehnt.
+
+**Privatsphäre**
+- Teilen-Links liefern nur noch Dateien aus, die der Ersteller selbst sehen darf. Verschiebt jemand eine geteilte Datei in seinen Privat-Ordner, ist sie über den Link nicht mehr erreichbar.
+- Der Fortschritt einer Komplett-Wiederherstellung (mit Ordnernamen) ist nach der Einrichtung nicht mehr ohne Anmeldung abrufbar (M5).
+
+**Oberfläche**
+- Nach einem Ordnerwechsel zeigte die Vollbildansicht ein Foto aus dem falschen Ordner.
+- Die Zeitleiste sprang während der Indizierung alle 3 Sekunden an den Anfang.
+- Die Pfeiltasten wirkten auch beim Vorspulen im Video und in Eingabefeldern.
+- Uploads laufen jetzt weiter, wenn man den Ordner oder die Ansicht wechselt. Beim Schließen der Seite gibt es eine Warnung.
+- Beim Spiegel-Einrichten und bei der Komplett-Wiederherstellung wurde „fertig“ zu früh gemeldet.
+- Beim Login meldete ein nicht erreichbarer Server „Passwort falsch“.
+- Ein ungültiges Speicherlimit wurde stillschweigend zu „kein Limit“.
+- Kaputte Adressen ließen die App abstürzen.
+- Behoben sind außerdem Zustandsfehler in den Dialogen für Wiederherstellen, Benutzer anlegen und Festplatten.
+
+**Installation und Veröffentlichung**
+- `install.sh` installiert jetzt Docker Compose v2 passend zum System: Debian 13 und Ubuntu aus den eigenen Paketquellen, Debian 12 über Dockers Paketquelle. Die Paketerkennung wurde in Containern mit Debian 12/13 und Ubuntu 22.04/24.04 geprüft.
+- Bricht `install.sh` ab, beginnt der nächste Aufruf wieder als Neuinstallation statt als „Aktualisierung“ ohne Fragen.
+- GitHub Action: Das Haupt-Image schlug beim Zusammenfassen fehl, weil das Suchmuster `digest-homevault-*` auch die Teile von `homevault-disks` und `homevault-samba` traf. Die Images sind jetzt außerdem mit dem Repository verknüpft.
+- `ADMIN_USER`/`ADMIN_PASSWORD` und `INDEX_INTERVAL_MINUTES` aus der README werden jetzt auch wirklich an den Container übergeben.
+- Der Platzhalter-Token aus der Vorlage wird abgelehnt.
+
 ## Nicht getestet (Grenzen dieses Tests)
 
 | Bereich | Warum nicht | Risiko / Empfehlung |
@@ -304,5 +357,5 @@ Bei der Entwicklung vorher zusätzlich gefunden und behoben:
 | Große Bibliotheken (z. B. 50.000 Fotos, mehrere TB) | Testdaten nur wenige MB. | Erster Index-Durchlauf, Video-Umwandlung und Spiegel-Anlage dauern dann deutlich länger. Spiegel am besten anlegen, bevor viele Daten da sind. |
 | Zeitgesteuerte Abläufe (Backup um 3 Uhr, monatliche Datenprüfung, Papierkorb nach 30 Tagen) | Zeitplan-Logik per Unit-Test geprüft, nicht über echte Tage. | Nach der ersten Nacht den Backup-Verlauf ansehen. |
 | Stromausfall während Spiegel-Anlage oder Plattentausch | Nicht simuliert. | Diese Vorgänge nur mit stabiler Stromversorgung starten (USV empfohlen). |
-| ARM64 (z. B. Raspberry Pi), `install.sh`, GitHub-Actions | Erst möglich, wenn das Projekt auf GitHub liegt. | Nach dem ersten Upload prüfen. |
+| ARM64 (z. B. Raspberry Pi), `install.sh` komplett, GitHub-Actions | Brauchen die veröffentlichten Images auf GitHub. | Nach dem ersten erfolgreichen Workflow-Lauf `install.sh` auf einem frischen Server ausführen. |
 

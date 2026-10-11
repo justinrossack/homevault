@@ -13,6 +13,15 @@ export type Route =
   | { view: 'settings'; tab?: string }
   | { view: 'trash' }
 
+/** Kaputte Prozent-Kodierung (z. B. „%E0%A4%A“) nicht abstürzen lassen */
+function safeDecode(s: string) {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    return s
+  }
+}
+
 export function parseHash(hash: string): Route {
   const parts = hash.replace(/^#\/?/, '').split('/')
   const [first, ...rest] = parts
@@ -30,7 +39,7 @@ export function parseHash(hash: string): Route {
       return rest[0] && Number.isFinite(id) ? { view: 'album', id } : { view: 'albums' }
     }
     case 'files':
-      return { view: 'files', path: rest.map(decodeURIComponent).join('/') }
+      return { view: 'files', path: rest.map(safeDecode).join('/') }
     default:
       return { view: 'files', path: '' }
   }

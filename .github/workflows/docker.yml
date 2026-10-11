@@ -58,6 +58,10 @@ jobs:
           context: ${{ matrix.image.context }}
           target: ${{ matrix.image.target }}
           platforms: linux/${{ matrix.platform.arch }}
+          # verknüpft das Paket auf ghcr.io mit diesem Repository
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
           cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || 'type=cacheonly' }}
@@ -73,7 +77,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
         with:
-          name: digest-${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          # doppelter Bindestrich: „homevault--*“ passt nicht auf „homevault-disks--*“
+          name: digest-${{ matrix.image.name }}--${{ matrix.platform.arch }}
           path: /tmp/digests/*
           retention-days: 1
 
@@ -89,7 +94,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digest-${{ matrix.image }}-*
+          pattern: digest-${{ matrix.image }}--*
           merge-multiple: true
 
       - name: Image-Name festlegen
@@ -121,6 +126,8 @@ jobs:
         run: |
           args=()
           while read -r tag; do args+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          # ghcr.io liest die Verknüpfung zum Repository aus dem Index
+          args+=(--annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY")
           for digest in *; do args+=("$IMAGE@sha256:$digest"); done
           docker buildx imagetools create "${args[@]}"
 

@@ -65,7 +65,7 @@ export default function Setup({ onDone }: { onDone: () => void }) {
         </Stepper>
 
         {step === 'welcome' && <Welcome onNext={() => setStep('admin')} onRestore={() => setStep('restore')} />}
-        {step === 'restore' && <RestoreSetup onBack={() => setStep('welcome')} onDone={onDone} />}
+        {step === 'restore' && <RestoreSetup onBack={() => setStep('welcome')} />}
         {step === 'admin' && (
           <AdminStep
             onCreated={async (u) => {
@@ -243,7 +243,7 @@ function AdminStep({ onCreated }: { onCreated: (u: User) => void | Promise<void>
  * Komplett-Wiederherstellung auf einem neuen Server: Benutzer, Alben,
  * Einstellungen und alle Dateien vom Backup-NAS laden.
  */
-function RestoreSetup({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
+function RestoreSetup({ onBack }: { onBack: () => void }) {
   const [v, setV] = useState({ host: '', port: 445, share: '', folder: 'homevault', username: '', password: '' })
   const [error, setError] = useState('')
   const [running, setRunning] = useState<BackupProgress | null>(null)
@@ -263,31 +263,42 @@ function RestoreSetup({ onBack, onDone }: { onBack: () => void; onDone: () => vo
   useEffect(() => {
     if (!started) return
     let stop = false
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
     const poll = async () => {
+      // Fortschritt abfragen; Fehler beim Abfragen sind meist nur kurze Aussetzer
       while (!stop) {
         const s = await api.setupRestoreStatus().catch(() => null)
+        if (stop) return
+        // done: Datenbank ist übernommen, der Server läuft schon neu
+        if (s?.done) {
+          location.reload()
+          return
+        }
         if (s?.result && !s.result.ok) {
           setError(s.result.message ?? 'Fehler')
           setStarted(false)
           return
         }
-        if (s === null || s.result?.ok) {
-          // Server startet neu und übernimmt die Datenbank
-          for (let i = 0; i < 120 && !(await api.health().catch(() => false)); i++) await new Promise((r) => setTimeout(r, 1000))
-          await new Promise((r) => setTimeout(r, 4000))
-          for (let i = 0; i < 120 && !(await api.health().catch(() => false)); i++) await new Promise((r) => setTimeout(r, 1000))
-          onDone()
+        if (s?.result?.ok) break
+        if (s) setRunning(s.running)
+        await sleep(1500)
+      }
+      // Server startet neu und übernimmt die Datenbank: warten, bis er wieder antwortet
+      while (!stop) {
+        await sleep(2000)
+        const me = await api.me().catch(() => null)
+        if (stop) return
+        if (me && !me.setup_needed) {
+          location.reload()
           return
         }
-        setRunning(s.running)
-        await new Promise((r) => setTimeout(r, 1500))
       }
     }
     poll()
     return () => {
       stop = true
     }
-  }, [started, onDone])
+  }, [started])
 
   if (started) {
     const pct = running?.total_bytes ? (running.bytes / running.total_bytes) * 100 : undefined

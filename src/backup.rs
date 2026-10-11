@@ -260,9 +260,9 @@ impl Backups {
             .await?;
         for id in due {
             // nacheinander; ist gerade ein manueller Backup aktiv, beim nächsten Durchlauf
-            if self.busy.try_lock().is_ok() {
+            if let Ok(guard) = self.busy.clone().try_lock_owned() {
                 tracing::info!("Geplanter Backup für Ziel {id} startet");
-                self.clone().run(id).await;
+                self.clone().run(id, guard).await;
             }
         }
         Ok(())
@@ -274,16 +274,18 @@ impl Backups {
 
     /// Startet einen Backup im Hintergrund. Fehler, wenn schon einer läuft.
     pub fn spawn(self: &Arc<Self>, target_id: i64) -> Result<(), AppError> {
-        if self.busy.try_lock().is_err() {
-            return Err(AppError::Conflict("Es läuft bereits ein Backup".into()));
-        }
+        let guard = self
+            .busy
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| AppError::Conflict("Es läuft bereits ein Backup".into()))?;
         let me = self.clone();
-        tokio::spawn(async move { me.run(target_id).await });
+        tokio::spawn(async move { me.run(target_id, guard).await });
         Ok(())
     }
 
-    async fn run(self: Arc<Self>, target_id: i64) {
-        let _guard = self.busy.lock().await;
+    /// `_guard` hält die Sperre, bis der Lauf fertig ist.
+    async fn run(self: Arc<Self>, target_id: i64, _guard: tokio::sync::OwnedMutexGuard<()>) {
         let started = db::now();
         let prepared = self
             .db

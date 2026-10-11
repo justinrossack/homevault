@@ -70,12 +70,12 @@ pub struct Index {
 impl Index {
     /// Startet den Index-Thread. Scannt sofort, danach alle `interval` und
     /// immer dann, wenn `request_scan` aufgerufen wird.
-    pub fn start(db_path: PathBuf, data_dir: PathBuf, cache_dir: PathBuf, interval: Duration) -> std::sync::Arc<Self> {
+    pub fn start(db_path: PathBuf, data_dir: PathBuf, cache_dir: PathBuf, interval: Duration, paused: bool) -> std::sync::Arc<Self> {
         let (tx, rx) = mpsc::channel::<()>();
         let index = std::sync::Arc::new(Self {
             tx: Mutex::new(tx),
             status: Mutex::new(Status::default()),
-            paused: std::sync::atomic::AtomicBool::new(false),
+            paused: std::sync::atomic::AtomicBool::new(paused),
         });
         let me = index.clone();
         std::thread::Builder::new()
@@ -227,17 +227,42 @@ pub fn area_of(rel: &str) -> Option<String> {
 
 /// Läuft rekursiv durch einen Ordner. Symlinks werden nicht verfolgt
 /// (Schutz vor Endlosschleifen und Pfaden außerhalb des Datenordners).
-fn walk(dir: &Path, data_dir: &Path, out: &mut Vec<Found>, usage: &mut BTreeMap<String, AreaUsage>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+/// `incomplete` wird gesetzt, wenn etwas nicht lesbar war; dann darf
+/// nichts als gelöscht gelten.
+fn walk(dir: &Path, data_dir: &Path, out: &mut Vec<Found>, usage: &mut BTreeMap<String, AreaUsage>, incomplete: &mut bool) {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!("Index: {} nicht lesbar: {e}", dir.display());
+            *incomplete = true;
+            return;
+        }
+    };
     let mut files = Vec::new();
-    for e in rd.flatten() {
+    for e in rd {
+        let Ok(e) = e else {
+            *incomplete = true;
+            continue;
+        };
         let name = e.file_name().to_string_lossy().into_owned();
-        let Ok(ft) = e.file_type() else { continue };
+        let Ok(ft) = e.file_type() else {
+            *incomplete = true;
+            continue;
+        };
         if ft.is_dir() {
             if !name.starts_with('.') {
-                walk(&e.path(), data_dir, out, usage);
+                walk(&e.path(), data_dir, out, usage, incomplete);
             }
         } else if ft.is_file() {
+            // Reste abgebrochener Uploads (z. B. Server-Neustart) aufräumen
+            if name.starts_with(".upload-") && name.ends_with(".part") {
+                let old = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok());
+                if old.is_some_and(|age| age > Duration::from_secs(86400)) {
+                    let _ = std::fs::remove_file(e.path());
+                    continue;
+                }
+            }
             // auch versteckte Dateien belegen Platz
             let size = e.metadata().map_or(0, |m| m.len());
             let rel = paths::relative(data_dir, &e.path());
@@ -276,7 +301,15 @@ fn walk(dir: &Path, data_dir: &Path, out: &mut Vec<Found>, usage: &mut BTreeMap<
             continue;
         }
         let Some(kind) = kind_str(&p) else { continue };
-        let Ok(meta) = std::fs::metadata(&p) else { continue };
+        let meta = match std::fs::metadata(&p) {
+            Ok(m) => m,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    *incomplete = true;
+                }
+                continue;
+            }
+        };
         out.push(Found {
             path: paths::relative(data_dir, &p),
             live: lives.remove(&p),
@@ -288,10 +321,16 @@ fn walk(dir: &Path, data_dir: &Path, out: &mut Vec<Found>, usage: &mut BTreeMap<
     }
 }
 
+/// Bereich, Art, Größe, Änderungszeit: daran wird eine verschobene Datei erkannt
+type MoveKey = (Option<String>, String, i64, i64);
+/// neue Datei: verschoben von (ID, alter Pfad) oder neu mit Metadaten
+type NewFile<'a> = (&'a Found, Option<(i64, String)>, Option<Meta>);
+
 fn scan(conn: &mut Connection, data_dir: &Path, usage: &mut BTreeMap<String, AreaUsage>) -> Result<ScanStats, AppError> {
     let mut found = Vec::new();
+    let mut incomplete = false;
     for space in [paths::SHARED, paths::PRIVATE] {
-        walk(&data_dir.join(space), data_dir, &mut found, usage);
+        walk(&data_dir.join(space), data_dir, &mut found, usage, &mut incomplete);
     }
 
     // Einträge im Papierkorb bleiben „geparkt“, damit Alben und Favoriten
@@ -331,17 +370,22 @@ fn scan(conn: &mut Connection, data_dir: &Path, usage: &mut BTreeMap<String, Are
         }
     }
     // Was jetzt noch in `existing` steht, ist verschwunden oder verschoben.
-    let mut missing: HashMap<(String, i64, i64), Vec<i64>> = HashMap::new();
-    for row in existing.into_values() {
-        missing.entry((row.kind, row.size, row.mtime)).or_default().push(row.id);
+    // Verschieben nur innerhalb desselben Bereichs erkennen: sonst würde z. B.
+    // ein Teilen-Link einer Datei folgen, die in einen fremden Privat-Ordner
+    // gewandert ist.
+    let mut missing: HashMap<MoveKey, Vec<(i64, String)>> = HashMap::new();
+    for (path, row) in existing {
+        missing.entry((area_of(&path), row.kind, row.size, row.mtime)).or_default().push((row.id, path));
     }
 
     for chunk in new.chunks(CHUNK) {
         // Metadaten vor der Transaktion lesen, damit die DB nicht blockiert
-        let prepared: Vec<(&Found, Option<i64>, Option<Meta>)> = chunk
+        let prepared: Vec<NewFile> = chunk
             .iter()
+            // inzwischen gelöscht (z. B. in den Papierkorb gelegt)
+            .filter(|f| f.abs.exists())
             .map(|f| {
-                let key = (f.kind.to_owned(), f.size, f.mtime);
+                let key = (area_of(&f.path), f.kind.to_owned(), f.size, f.mtime);
                 match missing.get_mut(&key).and_then(|ids| ids.pop()) {
                     Some(id) => (f, Some(id), None),
                     None => (f, None, Some(read_meta(&f.abs, f.kind))),
@@ -350,12 +394,12 @@ fn scan(conn: &mut Connection, data_dir: &Path, usage: &mut BTreeMap<String, Are
             .collect();
         let tx = conn.transaction()?;
         for (f, moved_id, meta) in prepared {
-            if let Some(id) = moved_id {
-                tx.execute(
-                    "UPDATE media SET path = ?, live_path = ?, indexed_at = ? WHERE id = ?",
-                    params![f.path, f.live, db::now(), id],
+            if let Some((id, old)) = moved_id {
+                // nur, wenn der Eintrag nicht inzwischen woanders steht (Papierkorb)
+                stats.moved += tx.execute(
+                    "UPDATE media SET path = ?, live_path = ?, indexed_at = ? WHERE id = ? AND path = ?",
+                    params![f.path, f.live, db::now(), id, old],
                 )?;
-                stats.moved += 1;
             } else {
                 let m = meta.unwrap_or_default();
                 tx.execute(
@@ -388,10 +432,19 @@ fn scan(conn: &mut Connection, data_dir: &Path, usage: &mut BTreeMap<String, Are
     for (id, live) in live_updates {
         tx.execute("UPDATE media SET live_path = ? WHERE id = ?", params![live, id])?;
     }
-    for id in missing.into_values().flatten() {
-        // Favoriten/Album-Einträge verschwinden per ON DELETE CASCADE
-        tx.execute("DELETE FROM media WHERE id = ?", [id])?;
-        stats.removed += 1;
+    if incomplete {
+        // lieber einen Durchlauf später aufräumen als Alben/Favoriten verlieren
+        tracing::warn!("Index: nicht alles lesbar, es wird nichts als gelöscht markiert");
+    } else {
+        for (id, path) in missing.into_values().flatten() {
+            // Während des Durchlaufs wiederhergestellt oder in den Papierkorb
+            // gelegt? Dann stimmt der Pfad nicht mehr bzw. die Datei ist da.
+            if data_dir.join(&path).exists() {
+                continue;
+            }
+            // Favoriten/Album-Einträge verschwinden per ON DELETE CASCADE
+            stats.removed += tx.execute("DELETE FROM media WHERE id = ? AND path = ?", params![id, path])?;
+        }
     }
     tx.commit()?;
     Ok(stats)

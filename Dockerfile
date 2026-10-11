@@ -23,7 +23,8 @@ RUN apk add --no-cache btrfs-progs smartmontools util-linux lsblk blkid tini
 COPY --from=build /app/target/release/homevault /usr/local/bin/homevault
 ENV DATA_DIR=/data STATE_DIR=/state PORT=8091
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5m CMD wget -qO- http://127.0.0.1:8091/health || exit 1
-ENTRYPOINT ["/sbin/tini", "--", "homevault", "disk-agent"]
+# -s: mit `pid: host` ist tini nicht PID 1, räumt aber trotzdem Zombies ab
+ENTRYPOINT ["/sbin/tini", "-s", "--", "homevault", "disk-agent"]
 
 # --- 4. Laufzeit-Image (Web-App) ---
 FROM alpine:3.22

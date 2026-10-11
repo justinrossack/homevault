@@ -113,6 +113,10 @@ upload "$USR" "$A/notizen.md" Privat >/dev/null
 t E9 "Fremder privater Ordner nicht sichtbar" bash -c "! curl -s -b $ADM '$B/api/list?path=Privat' | grep -q notizen.md"
 t E10 "Hochgeladene HTML-Datei läuft in Sandbox" bash -c "upload $ADM $A/boese.html Gemeinsam >/dev/null; curl -s -D - -o /dev/null -b $ADM '$B/api/file?path=Gemeinsam/boese.html' | grep -qi 'content-security-policy: sandbox'"
 
+post "$ADM" /api/folder '{"path":"Gemeinsam/Gleichzeitig"}' >/dev/null
+for _ in 1 2 3 4; do upload "$ADM" "$A/foto.jpg" Gemeinsam/Gleichzeitig >/dev/null & done; wait
+t E11 "Gleichzeitige Uploads gleichen Namens: keiner überschreibt" jqt "$(get "$ADM" '/api/list?path=Gemeinsam/Gleichzeitig')" '[.entries[] | select(.kind == "image")] | length == 4'
+
 section "F Fotos & Videos"
 t F1 "Vorschaubild (JPEG)" bash -c "curl -s -b $ADM -o $T/t.jpg -w '%{content_type}' '$B/api/thumb?path=Gemeinsam/foto.jpg' | grep -q image/jpeg && test \$(stat -c%s $T/t.jpg) -gt 1000"
 upload "$ADM" "$A/IMG_0001.HEIC" Gemeinsam/Urlaub >/dev/null
@@ -125,6 +129,7 @@ t F5 "Live Photo: MOV wird nicht einzeln angezeigt" bash -c "! echo '$L' | jq -e
 t F6 "Live-Video wird als H.264 geliefert" bash -c "curl -s -b $ADM -o $T/live.mp4 '$B/api/live?path=Gemeinsam/Urlaub/IMG_0001.HEIC' && ffprobe -v error -show_entries stream=codec_name -of csv=p=0 $T/live.mp4 2>/dev/null | grep -q h264 || docker run --rm -v $T:/t --entrypoint ffprobe homevault-homevault -v error -show_entries stream=codec_name -of csv=p=0 /t/live.mp4 | grep -q h264"
 upload "$ADM" "$A/video.mp4" Gemeinsam >/dev/null
 upload "$ADM" "$A/iphone-video.mov" Gemeinsam >/dev/null
+t F11 "Umbenennen auf den Namen des Live-Videos wird abgelehnt" bash -c "curl -s -b $ADM -X PATCH -H '$J' -d '{\"from\":\"Gemeinsam/Urlaub/IMG_0001.HEIC\",\"to\":\"Gemeinsam/Urlaub/neu.MOV\"}' $B/api/rename | grep -q 'Live-Video' && curl -s -b $ADM '$B/api/list?path=Gemeinsam/Urlaub' | grep -q IMG_0001.HEIC"
 t F7 "H.264-Video wird direkt abgespielt" jqt "$(get "$ADM" '/api/video?path=Gemeinsam/video.mp4')" '.mode == "original"'
 t F8 "HEVC-Video wird für alle Browser umgewandelt" until_ok 60 bash -c "curl -s -b $ADM '$B/api/video?path=Gemeinsam/iphone-video.mov' | jq -e '.mode == \"web\"'"
 t F9 "Umgewandeltes Video ist abspielbar" is "$(code -b $ADM "$B/api/video/web?path=Gemeinsam/iphone-video.mov")" 200
@@ -235,6 +240,7 @@ t M1 "Speicher-Übersicht mit Plattengröße" jqt "$ST" '.disk.total > 0 and .di
 t M2 "Belegung pro Benutzer" jqt "$ST" '.users | length >= 2'
 t M3 "Vorschau-Funktionen verfügbar (Office, PDF)" jqt "$(get "$ADM" /api/capabilities)" '.office == true and .page_thumbs == true'
 t M4 "Medien-Index ohne Fehler" jqt "$(get "$ADM" /api/index)" '.index.last_error == null and .index.items > 0'
+t M5 "Wiederherstellungs-Status nach der Einrichtung nicht mehr öffentlich" jqt "$(curl -s $B/api/setup/restore)" '.done == true and .result == null'
 
 section "N Festplatten: Ausfall, Notbetrieb, Tausch (Hot-Swap)"
 D=$(disks)
@@ -256,6 +262,20 @@ t N19 "Alte Platte wird als frühere Platte erkannt" until_ok 10 bash -c "curl -
 NEWD=$(disks | jq -r '[.disks[] | select(.old_member == true)][0].name')
 t N20 "Dritte Platte hinzufügen (Erweitern)" has "$(post "$ADM" /api/disks/add "{\"device\":\"/dev/$NEWD\",\"confirm\":[\"$NEWD\"]}")" '"ok":true'
 t N21 "Spiegel hat jetzt 3 Platten" until_ok 30 bash -c "curl -s -b $ADM $B/api/disks | jq -e '.job == null and (.pool.devices | length) == 3'"
+
+section "N Festplatten: alle Platten fehlen beim Start"
+POOL_IMGS=$(for d in $(disks | jq -r '.pool.devices[].path'); do losetup -n -O BACK-FILE "$d" | tr -d ' '; done)
+compose stop >/dev/null 2>&1
+umount "$MEDIA"
+for img in $POOL_IMGS; do losetup -d "$(losetup -j "$img" | cut -d: -f1)"; done
+compose up -d >/dev/null 2>&1
+t N22 "Oberfläche startet trotzdem" until_ok 120 health
+t N23 "…aber nur lesend (Notbetrieb gemeldet)" bash -c "docker logs ${CONTAINER_PREFIX:-homevault} 2>&1 | grep -q 'nur lesender Notbetrieb'"
+t N24 "Netzlaufwerk bleibt aus, solange der Spiegel fehlt" bash -c "docker logs ${CONTAINER_PREFIX:-homevault}-smb 2>&1 | tail -3 | grep -q 'Warte auf den Speicherverbund'"
+for img in $POOL_IMGS; do losetup -f "$img"; done
+t N25 "Platten wieder da: Spiegel wird von selbst eingehängt" until_ok 90 bash -c "health && curl -s -b $ADM $B/api/disks | jq -e '.pool.mounted == true and .maintenance == false'"
+t N26 "Schreiben wieder möglich" until_ok 15 bash -c "curl -s -b $ADM -H '$J' -d '{\"path\":\"Gemeinsam/Nach-Ausfall\"}' $B/api/folder | grep -q '\"ok\":true'"
+t N27 "Netzlaufwerk wieder erreichbar" until_ok 30 bash -c "smb Gemeinsam admin%admin1234 ls | grep -q Nach-Ausfall"
 
 printf '\nERGEBNIS: %d bestanden, %d fehlgeschlagen\n' "$PASSED" "$FAILED"
 [ "$FAILED" -eq 0 ]

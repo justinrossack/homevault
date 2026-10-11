@@ -265,6 +265,9 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     method,
     headers: body ? { 'content-type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
+  }).catch(() => {
+    // keine Antwort (Server weg, Netzwerk)
+    throw new ApiError(0, 'Server nicht erreichbar')
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -338,7 +341,8 @@ export const api = {
   backupRestore: (id: number, body: { version: string; paths: string[]; mode: 'original' | 'folder' }) =>
     request('POST', `/api/backups/${id}/restore`, body),
   setupRestore: (t: Partial<BackupTargetInput>) => request('POST', '/api/setup/restore', t),
-  setupRestoreStatus: () => request<{ running: BackupProgress | null; result: RestoreResult | null }>('GET', '/api/setup/restore'),
+  setupRestoreStatus: () =>
+    request<{ running: BackupProgress | null; result: RestoreResult | null; done?: boolean }>('GET', '/api/setup/restore'),
 
   // Dateien
   list: (path: string) => request<{ path: string; entries: Entry[] }>('GET', `/api/list?${q(path)}`),
@@ -408,6 +412,13 @@ export function joinPath(dir: string, name: string) {
 export function parentPath(path: string) {
   const i = path.lastIndexOf('/')
   return i < 0 ? '' : path.slice(0, i)
+}
+
+/** Nach dem Löschen: das nächste verbliebene Element (sonst das letzte) für die Lightbox */
+export function nextRemaining(items: Entry[], current: string, removed: Set<string>): string | null {
+  const i = items.findIndex((e) => e.path === current)
+  const left = (e: Entry) => !removed.has(e.path)
+  return (items.slice(i + 1).find(left) ?? items.filter(left).at(-1))?.path ?? null
 }
 
 export function formatSize(bytes: number) {

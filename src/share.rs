@@ -29,7 +29,6 @@ use crate::{
     error::AppError,
     fs_api::needs_preview,
     index, library, media,
-    trash::TRASH_DIR,
     video,
 };
 
@@ -144,18 +143,29 @@ fn public_entry(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     }))
 }
 
+/// SQL-Bedingung: Datei liegt (noch) dort, wo der Besitzer des Links sie
+/// sehen darf – in Gemeinsam oder seinem eigenen Privat-Ordner, nicht im
+/// Papierkorb. `sid` ist der SQL-Parameter mit der ID der Freigabe.
+fn owner_visible(sid: &str) -> String {
+    format!(
+        "(substr(m.path, 1, 10) = 'Gemeinsam/' OR EXISTS (SELECT 1 FROM shares s JOIN users o ON o.id = s.owner_id
+          WHERE s.id = {sid} AND substr(m.path, 1, length(o.name) + 8) = 'Privat/' || o.name || '/'))"
+    )
+}
+
 /// Pfad eines Bildes, falls es zu dieser Freigabe gehört.
 async fn item_path(state: &AppState, share: &Share, item: i64) -> Result<PathBuf, AppError> {
-    let (album, media) = (share.album_id, share.media_id);
+    let (sid, album, media) = (share.id, share.album_id, share.media_id);
     let path: Option<String> = state
         .db
         .call(move |c| {
             Ok(c.query_row(
                 &format!(
-                    "SELECT m.path FROM media m WHERE m.id = ?1 AND m.path NOT LIKE '{TRASH_DIR}/%'
-                     AND (m.id = ?2 OR EXISTS (SELECT 1 FROM album_items i WHERE i.album_id = ?3 AND i.media_id = m.id))"
+                    "SELECT m.path FROM media m WHERE m.id = ?1 AND {}
+                     AND (m.id = ?2 OR EXISTS (SELECT 1 FROM album_items i WHERE i.album_id = ?3 AND i.media_id = m.id))",
+                    owner_visible("?4")
                 ),
-                params![item, media, album],
+                params![item, media, album, sid],
                 |r| r.get(0),
             )
             .optional()?)
@@ -182,21 +192,21 @@ pub async fn info(State(state): State<AppState>, UrlPath(token): UrlPath<String>
             c.execute("UPDATE shares SET views = views + 1 WHERE id = ?", [sid])?;
             let owner: String =
                 c.query_row("SELECT u.name FROM shares s JOIN users u ON u.id = s.owner_id WHERE s.id = ?", [sid], |r| r.get(0))?;
-            let visible = format!("m.path NOT LIKE '{TRASH_DIR}/%'");
+            let visible = owner_visible("?2");
             if let Some(a) = album {
                 let title: String = c.query_row("SELECT name FROM albums WHERE id = ?", [a], |r| r.get(0))?;
                 let entries = c
                     .prepare(&format!(
                         "SELECT {ITEM_COLS} FROM media m JOIN album_items i ON i.media_id = m.id
-                         WHERE i.album_id = ? AND {visible} ORDER BY m.taken_at DESC, m.id DESC"
+                         WHERE i.album_id = ?1 AND {visible} ORDER BY m.taken_at DESC, m.id DESC"
                     ))?
-                    .query_map([a], public_entry)?
+                    .query_map([a, sid], public_entry)?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok((title, owner, entries))
             } else {
                 let entries = c
-                    .prepare(&format!("SELECT {ITEM_COLS} FROM media m WHERE m.id = ? AND {visible}"))?
-                    .query_map([media], public_entry)?
+                    .prepare(&format!("SELECT {ITEM_COLS} FROM media m WHERE m.id = ?1 AND {visible}"))?
+                    .query_map(params![media, sid], public_entry)?
                     .collect::<Result<Vec<_>, _>>()?;
                 let title = entries.first().and_then(|e| e["name"].as_str()).unwrap_or("Geteilte Datei").to_owned();
                 Ok((title, owner, entries))
