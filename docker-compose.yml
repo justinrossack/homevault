@@ -1,0 +1,65 @@
+# Konfiguration in .env (Vorlage: .env.example)
+# Nutzt die fertigen Images von GitHub. Aus dem Quellcode bauen:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+services:
+  homevault:
+    image: ghcr.io/justinrossack/homevault:${HOMEVAULT_VERSION:-latest}
+    container_name: ${CONTAINER_PREFIX:-homevault}
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    # Beim ersten Aufruf im Browser startet der Einrichtungsassistent
+    # (Admin-Konto, Servername, Festplatten, weitere Benutzer).
+    environment:
+      # Zeitzone für Backup-Zeitpläne
+      TZ: ${TZ:-Europe/Berlin}
+      DISK_AGENT_URL: ${DISK_AGENT_URL:-}
+      DISK_AGENT_TOKEN: ${DISK_AGENT_TOKEN:-}
+    volumes:
+      # rslave: sieht den Speicherverbund, sobald der Platten-Dienst ihn einhängt
+      - ${MEDIA_DIR:?MEDIA_DIR in .env setzen}:/data:${MEDIA_PROPAGATION:-rw}
+      - cache:/cache
+    depends_on:
+      disks:
+        condition: service_healthy
+        required: false
+    restart: unless-stopped
+
+  # Gleiche Ordner und Logins als Netzlaufwerk (Windows-Explorer, macOS Finder, Dateien-App)
+  samba:
+    image: ghcr.io/justinrossack/homevault-samba:${HOMEVAULT_VERSION:-latest}
+    container_name: ${CONTAINER_PREFIX:-homevault}-smb
+    ports:
+      - "${SMB_PORT:-445}:445"
+    depends_on:
+      homevault:
+        condition: service_started
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+    volumes:
+      - ${MEDIA_DIR}:/data:${MEDIA_PROPAGATION:-rw}
+    restart: unless-stopped
+
+  # Optional: Festplatten-Verwaltung (Spiegel/RAID, Hot-Swap).
+  # Einschalten mit COMPOSE_PROFILES=disks in der .env (siehe .env.example).
+  disks:
+    image: ghcr.io/justinrossack/homevault-disks:${HOMEVAULT_VERSION:-latest}
+    profiles: ["disks"]
+    privileged: true
+    # um Systemplatten des Servers sicher zu erkennen
+    pid: host
+    environment:
+      DISK_AGENT_TOKEN: ${DISK_AGENT_TOKEN:-}
+      DISK_TEST_LOOP_DIR: ${DISK_TEST_LOOP_DIR:-}
+      TZ: ${TZ:-Europe/Berlin}
+    volumes:
+      - /dev:/dev
+      # rshared: hier eingehängter Speicher wird für den Server und die anderen Container sichtbar
+      - ${MEDIA_DIR}:/data:rshared
+      - disks-state:/state
+    restart: unless-stopped
+
+volumes:
+  cache:
+  disks-state:

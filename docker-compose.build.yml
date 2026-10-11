@@ -1,0 +1,11 @@
+# Aus dem Quellcode bauen statt fertige Images zu laden (Entwicklung, Tests):
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+services:
+  homevault:
+    build: .
+  samba:
+    build: ./samba
+  disks:
+    build:
+      context: .
+      target: disks

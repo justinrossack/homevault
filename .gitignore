@@ -1,0 +1,16 @@
+# Build
+/target
+web/node_modules
+web/dist
+
+# Lokale Konfiguration (Passwörter, Tokens) – nur die Vorlage gehört ins Repo
+.env*
+!.env.example
+
+# Persönliche Test- und Beispieldaten
+/testdata
+/testcache*
+/testbackup
+/.debian-test
+
+.DS_Store

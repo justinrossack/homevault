@@ -1,0 +1,48 @@
+[package]
+name = "homevault"
+version = "0.1.0"
+edition = "2024"
+description = "Schnelle, einfache Foto- und Video-Verwaltung für den Heimserver"
+license = "MIT"
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "signal", "sync", "process", "time"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["fs", "compression-gzip", "compression-br", "trace"] }
+rust-embed = "8"
+mime_guess = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+blake3 = "1"
+rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+argon2 = "0.5"
+md4 = "0.10"
+libc = "0.2"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+kamadak-exif = "0.6"
+zip = { version = "9", default-features = false, features = ["deflate-flate2", "deflate64", "bzip2", "lzma"] }
+tar = "0.4"
+flate2 = "1"
+tokio-stream = "0.1"
+ureq = { version = "3", default-features = false, features = ["json"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Bilder im Debug-Build trotzdem schnell dekodieren
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package."zune-jpeg"]
+opt-level = 3
