@@ -240,7 +240,7 @@ if [ -n "$NAS2_HOST" ]; then
   post "$ADM" /api/folder '{"path":"Gemeinsam/Familie"}' >/dev/null
   upload "$ADM" "$A/foto.jpg" Gemeinsam/Familie >/dev/null
   # zweites Ziel auf demselben NAS, nur als Verbindung, Benutzer dürfen hierher
-  KID=$(post "$ADM" /api/backups "{\"name\":\"Keller-NAS\",\"host\":\"$NAS2_HOST\",\"port\":$NAS2_PORT,\"share\":\"Gemeinsam\",\"folder\":\"keller\",\"username\":\"papa\",\"password\":\"papa1234\",\"include_shared\":false,\"include_private\":false,\"include_db\":false,\"user_sync\":true}" | jq .id)
+  KID=$(post "$ADM" /api/backups "{\"name\":\"Keller-NAS\",\"host\":\"$NAS2_HOST\",\"port\":$NAS2_PORT,\"share\":\"Gemeinsam\",\"folder\":\"keller\",\"username\":\"papa\",\"password\":\"papa1234\",\"include_shared\":false,\"include_private\":false,\"include_db\":false,\"user_sync\":\"all\"}" | jq .id)
   t S1 "Regel anlegen: Gemeinsam/Familie → Papas NAS" jqt "$(post "$ADM" /api/sync "{\"target_id\":$BID,\"source\":\"shared\",\"sub\":\"Familie\",\"dest\":\"sync/familie\"}")" '.id > 0'
   t S2 "Erster Abgleich überträgt vorhandene Dateien" until_ok 30 test -f $N2/sync/familie/foto.jpg
   t S3 "Zweite Regel in denselben Ordner wird abgelehnt" has "$(post "$ADM" /api/sync "{\"target_id\":$KID,\"source\":\"shared\",\"dest\":\"sync/familie/2024\"}")" "andere Regel"
@@ -258,6 +258,14 @@ if [ -n "$NAS2_HOST" ]; then
   t S10 "…in seinen eigenen Ordner auf dem NAS" until_ok 30 test -f $N2/keller/Benutzer/lisa/sync-test.md
   t S11 "Benutzer sieht nur seine eigenen Regeln" jqt "$(get "$USR" /api/sync)" '(.rules | length) == 1 and .rules[0].can_edit == true and (.users | length) == 0 and (.targets | length) == 1'
   t S12 "Admin sieht alle Regeln" jqt "$(get "$ADM" /api/sync)" '(.rules | length) == 2'
+  # NAS nur für ausgewählte Benutzer
+  OPA="\"name\":\"Opas NAS\",\"host\":\"$NAS2_HOST\",\"port\":$NAS2_PORT,\"share\":\"Gemeinsam\",\"folder\":\"opa\",\"username\":\"papa\",\"password\":\"papa1234\",\"include_shared\":false,\"include_private\":false,\"include_db\":false,\"user_sync\":\"selected\""
+  OID=$(post "$ADM" /api/backups "{$OPA,\"sync_users\":[\"admin\"]}" | jq .id)
+  t S16 "NAS nur für ausgewählte Benutzer: andere sehen es nicht" jqt "$(get "$USR" /api/sync)" "[.targets[].id] | index($OID) == null"
+  t S17 "…und dürfen dort nichts anlegen" is "$(code -b $USR -H "$J" -d "{\"target_id\":$OID,\"source\":\"private\"}" $B/api/sync)" 403
+  curl -s -b $ADM -X PATCH -H "$J" -d "{$OPA,\"sync_users\":[\"admin\",\"lisa\"]}" $B/api/backups/$OID >/dev/null
+  t S18 "Benutzer freigeschaltet: NAS ist wählbar" jqt "$(get "$USR" /api/sync)" "[.targets[].id] | index($OID) != null"
+  t S19 "Freigabe wird beim NAS angezeigt" jqt "$(get "$ADM" /api/backups)" ".targets[] | select(.id == $OID) | .user_sync == \"selected\" and .sync_users == [\"admin\",\"lisa\"]"
   mkdir -p $N2/vorhanden && echo alt > $N2/vorhanden/alt.txt
   t S13 "Zielordner mit fremden Dateien: erst nachfragen" has "$(post "$ADM" /api/sync "{\"target_id\":$BID,\"source\":\"shared\",\"sub\":\"Familie\",\"dest\":\"vorhanden\"}")" "DEST_NOT_EMPTY"
   t S14 "Fremde Dateien bleiben unangetastet" test -f $N2/vorhanden/alt.txt

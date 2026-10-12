@@ -56,6 +56,9 @@ const MAX_WAIT: Duration = Duration::from_secs(300);
 const RETRY: Duration = Duration::from_secs(300);
 /// zusätzlich regelmäßig komplett abgleichen (falls etwas verpasst wurde)
 const FULL_EVERY: Duration = Duration::from_secs(6 * 3600);
+/// SQL: darf Benutzer ?1 sein Privat auf Ziel `t` synchronisieren? (alle oder ausgewählt)
+const ALLOWED: &str =
+    "(t.user_sync = 1 OR (t.user_sync = 2 AND EXISTS (SELECT 1 FROM sync_target_users s WHERE s.target_id = t.id AND s.user_id = ?1)))";
 /// Ordner für Regeln, die Benutzer selbst anlegen: <backup-ordner>/Benutzer/<name>
 const USER_DIR: &str = "Benutzer";
 
@@ -581,22 +584,19 @@ pub async fn list(State(state): State<AppState>, Extension(me): Extension<Curren
                     e.insert(backup::load_target(c, r.target_id)?);
                 }
             }
-            // NAS, die man als Ziel wählen darf
+            // NAS, die man als Ziel wählen darf (Admin: alle)
+            let filter = if me2.admin { "1 = 1" } else { ALLOWED };
             let selectable: Vec<Value> = c
-                .prepare("SELECT id, name, host, share, folder, user_sync FROM backup_targets ORDER BY name")?
-                .query_map([], |r| {
+                .prepare(&format!("SELECT t.id, t.name, t.host, t.share, t.folder FROM backup_targets t WHERE {filter} ORDER BY t.name"))?
+                .query_map([me2.id], |r| {
                     Ok(json!({
                         "id": r.get::<_, i64>(0)?,
                         "name": r.get::<_, String>(1)?,
                         "location": format!("\\\\{}\\{}", r.get::<_, String>(2)?, r.get::<_, String>(3)?),
                         "folder": r.get::<_, String>(4)?,
-                        "user_sync": r.get::<_, bool>(5)?,
                     }))
                 })?
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .filter(|t| me2.admin || t["user_sync"] == true)
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             let users: Vec<String> = if me2.admin {
                 c.prepare("SELECT name FROM users ORDER BY name")?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
             } else {
@@ -654,7 +654,9 @@ pub async fn create(
         .db
         .call(move |c| {
             let target = backup::load_target(c, b.target_id)?;
-            if !me2.admin && !target.user_sync {
+            let allowed: bool = me2.admin
+                || c.query_row(&format!("SELECT count(*) > 0 FROM backup_targets t WHERE t.id = ?2 AND {ALLOWED}"), params![me2.id, b.target_id], |r| r.get(0))?;
+            if !allowed {
                 return Err(AppError::Forbidden);
             }
             let user_id: Option<i64> = match &user2 {

@@ -149,8 +149,14 @@ const MIGRATIONS: &[&str] = &[
     "#,
     // 4: Live-Sync zu anderen NAS, Eingangs-Ordner (automatisch einsortieren)
     r#"
-    -- Benutzer dürfen ihren Privat-Ordner auf dieses NAS synchronisieren
+    -- Wer darf seinen Privat-Ordner selbst auf dieses NAS synchronisieren?
+    -- 0 = niemand, 1 = alle Benutzer, 2 = nur die in sync_target_users
     ALTER TABLE backup_targets ADD COLUMN user_sync INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE sync_target_users (
+        target_id INTEGER NOT NULL REFERENCES backup_targets(id) ON DELETE CASCADE,
+        user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        PRIMARY KEY (target_id, user_id)
+    );
 
     CREATE TABLE sync_rules (
         id             INTEGER PRIMARY KEY,

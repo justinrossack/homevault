@@ -74,8 +74,10 @@ export interface BackupTargetInput {
   weekday: number
   keep_days: number
   enabled: boolean
-  /** Benutzer dürfen ihren Privat-Ordner hierher synchronisieren */
-  user_sync: boolean
+  /** Wer seinen Privat-Ordner selbst hierher synchronisieren darf */
+  user_sync: 'none' | 'all' | 'selected'
+  /** bei 'selected' */
+  sync_users: string[]
 }
 
 export interface BackupTarget extends BackupTargetInput {
@@ -121,7 +123,6 @@ export interface SyncTarget {
   name: string
   location: string
   folder: string
-  user_sync: boolean
 }
 
 export interface SyncRuleInput {

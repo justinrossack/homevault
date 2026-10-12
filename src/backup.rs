@@ -65,8 +65,9 @@ pub(crate) struct Target {
     keep_days: i64,
     enabled: bool,
     created_at: i64,
-    /// Benutzer dürfen ihren Privat-Ordner hierher synchronisieren
-    pub(crate) user_sync: bool,
+    /// Wer seinen Privat-Ordner selbst hierher synchronisieren darf:
+    /// 0 = niemand, 1 = alle, 2 = nur ausgewählte (sync_target_users)
+    pub(crate) user_sync: i64,
 }
 
 const TARGET_COLS: &str = "id, name, host, port, share, folder, username, password, include_shared, include_private, \
@@ -143,7 +144,11 @@ impl Target {
             "keep_days": self.keep_days,
             "enabled": self.enabled,
             "location": self.display(),
-            "user_sync": self.user_sync,
+            "user_sync": match self.user_sync {
+                1 => "all",
+                2 => "selected",
+                _ => "none",
+            },
         })
     }
 
@@ -590,8 +595,12 @@ pub struct TargetBody {
     keep_days: i64,
     #[serde(default = "yes")]
     enabled: bool,
+    /// "none" | "all" | "selected"
+    #[serde(default = "none")]
+    user_sync: String,
+    /// bei "selected": diese Benutzer
     #[serde(default)]
-    user_sync: bool,
+    sync_users: Vec<String>,
 }
 
 fn default_name() -> String {
@@ -608,6 +617,9 @@ fn midnight() -> String {
 }
 fn yes() -> bool {
     true
+}
+fn none() -> String {
+    "none".into()
 }
 
 impl TargetBody {
@@ -631,7 +643,15 @@ impl TargetBody {
             keep_days: 0,
             enabled: true,
             created_at: 0,
-            user_sync: false,
+            user_sync: 0,
+        }
+    }
+
+    fn user_sync_mode(&self) -> i64 {
+        match self.user_sync.as_str() {
+            "all" => 1,
+            "selected" => 2,
+            _ => 0,
         }
     }
 
@@ -656,6 +676,9 @@ impl TargetBody {
         }
         if self.username.is_empty() {
             return bad("Benutzername fehlt");
+        }
+        if !matches!(self.user_sync.as_str(), "none" | "all" | "selected") {
+            return bad("Ungültige Freigabe für Benutzer");
         }
         if !(1..=65535).contains(&self.port) {
             return bad("Ungültiger Port");
@@ -713,6 +736,7 @@ pub async fn list(State(state): State<AppState>, Extension(me): Extension<Curren
                     |r| r.get(0),
                 )?;
                 let mut v = t.public();
+                v["sync_users"] = json!(sync_user_names(c, t.id)?);
                 v["last_run"] = json!(last);
                 v["last_success"] = json!(last_ok);
                 v["next_run"] = json!(next_run(&t, now));
@@ -738,6 +762,33 @@ fn next_run(t: &Target, now: chrono::DateTime<Local>) -> Option<i64> {
         .find(|&s| s > last)
 }
 
+/// Benutzernamen -> IDs (vor dem Speichern, damit bei Tippfehlern nichts halb gespeichert wird)
+fn sync_user_ids(c: &Connection, names: &[String]) -> Result<Vec<i64>, AppError> {
+    names
+        .iter()
+        .map(|n| {
+            c.query_row("SELECT id FROM users WHERE name = ?", [n], |r| r.get(0))
+                .optional()?
+                .ok_or_else(|| AppError::BadRequest(format!("Benutzer „{n}“ gibt es nicht")))
+        })
+        .collect()
+}
+
+/// Benutzer, die ihren Privat-Ordner auf dieses Ziel synchronisieren dürfen
+fn set_sync_users(c: &Connection, target_id: i64, ids: &[i64]) -> Result<(), AppError> {
+    c.execute("DELETE FROM sync_target_users WHERE target_id = ?", [target_id])?;
+    for uid in ids {
+        c.execute("INSERT OR IGNORE INTO sync_target_users (target_id, user_id) VALUES (?, ?)", [target_id, *uid])?;
+    }
+    Ok(())
+}
+
+pub(crate) fn sync_user_names(c: &Connection, target_id: i64) -> rusqlite::Result<Vec<String>> {
+    c.prepare("SELECT u.name FROM sync_target_users s JOIN users u ON u.id = s.user_id WHERE s.target_id = ? ORDER BY u.name")?
+        .query_map([target_id], |r| r.get(0))?
+        .collect()
+}
+
 pub async fn create(
     State(state): State<AppState>,
     Extension(me): Extension<CurrentUser>,
@@ -749,16 +800,19 @@ pub async fn create(
     let id = state
         .db
         .call(move |c| {
+            let users = sync_user_ids(c, &b.sync_users)?;
             c.execute(
                 "INSERT INTO backup_targets (name, host, port, share, folder, username, password, include_shared,
                      include_private, include_db, schedule, time, weekday, keep_days, enabled, created_at, user_sync)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     b.name, b.host, b.port, b.share, b.folder, b.username, password, b.include_shared, b.include_private,
-                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, db::now(), b.user_sync
+                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, db::now(), b.user_sync_mode()
                 ],
             )?;
-            Ok(c.last_insert_rowid())
+            let id = c.last_insert_rowid();
+            set_sync_users(c, id, &users)?;
+            Ok(id)
         })
         .await?;
     tracing::info!("Backup-Ziel {id} angelegt von '{}'", me.name);
@@ -777,7 +831,8 @@ pub async fn update(
         .db
         .call(move |c| {
             let old = load_target(c, id)?;
-            let password = b.password.filter(|p| !p.is_empty()).unwrap_or(old.password);
+            let users = sync_user_ids(c, &b.sync_users)?;
+            let password = b.password.clone().filter(|p| !p.is_empty()).unwrap_or(old.password);
             c.execute(
                 "UPDATE backup_targets SET name = ?, host = ?, port = ?, share = ?, folder = ?, username = ?, password = ?,
                      include_shared = ?, include_private = ?, include_db = ?, schedule = ?, time = ?, weekday = ?,
@@ -785,9 +840,10 @@ pub async fn update(
                  WHERE id = ?",
                 params![
                     b.name, b.host, b.port, b.share, b.folder, b.username, password, b.include_shared, b.include_private,
-                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, b.user_sync, id
+                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, b.user_sync_mode(), id
                 ],
             )?;
+            set_sync_users(c, id, &users)?;
             Ok(())
         })
         .await?;
@@ -935,7 +991,7 @@ mod tests {
             keep_days: 30,
             enabled: true,
             created_at: 0,
-            user_sync: false,
+            user_sync: 0,
         }
     }
 
@@ -986,7 +1042,8 @@ mod tests {
             weekday: 6,
             keep_days: 30,
             enabled: true,
-            user_sync: false,
+            user_sync: "none".into(),
+            sync_users: Vec::new(),
         };
         b.validate().unwrap();
         assert_eq!((b.name.as_str(), b.host.as_str(), b.share.as_str(), b.folder.as_str()), ("Papas NAS", "192.168.1.20", "backup", "homevault"));

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Card,
@@ -56,7 +57,8 @@ const EMPTY: BackupTargetInput = {
   weekday: 6,
   keep_days: 30,
   enabled: true,
-  user_sync: false,
+  user_sync: 'none',
+  sync_users: [],
 }
 
 /** Ohne Bereiche dient das Ziel nur als Verbindung für den Live-Sync */
@@ -303,10 +305,15 @@ function TargetDialog({
   const [test, setTest] = useState<{ ok: boolean; message: string } | null>(null)
   const [busy, setBusy] = useState<'test' | 'save' | null>(null)
   const [error, setError] = useState('')
+  const [userNames, setUserNames] = useState<string[]>([])
 
   useEffect(() => {
     if (state) {
-      setV(state.value)
+      setV({ ...EMPTY, ...state.value })
+      api
+        .users()
+        .then((r) => setUserNames(r.users.map((u) => u.name)))
+        .catch(() => setUserNames([]))
       setTest(null)
       setError('')
     }
@@ -504,15 +511,26 @@ function TargetDialog({
             <Typography variant="subtitle2" sx={{ pt: 1 }}>
               Live-Sync
             </Typography>
-            <Box>
-              <FormControlLabel
-                control={<Switch checked={v.user_sync} onChange={(e) => set('user_sync', e.target.checked)} />}
-                label="Benutzer dürfen ihren Privat-Ordner auf dieses NAS synchronisieren"
+            <TextField
+              select
+              label="Wer darf den eigenen Privat-Ordner hierher synchronisieren?"
+              value={v.user_sync}
+              onChange={(e) => set('user_sync', e.target.value as BackupTargetInput['user_sync'])}
+              helperText={`Jeder bekommt dort einen eigenen Ordner: ${v.folder.trim() ? `${v.folder.trim()}/` : ''}Benutzer/<Name>`}
+            >
+              <MenuItem value="none">Niemand (nur Regeln vom Admin)</MenuItem>
+              <MenuItem value="all">Alle Benutzer</MenuItem>
+              <MenuItem value="selected">Nur ausgewählte Benutzer</MenuItem>
+            </TextField>
+            {v.user_sync === 'selected' && (
+              <Autocomplete
+                multiple
+                options={userNames}
+                value={v.sync_users}
+                onChange={(_, names) => set('sync_users', names)}
+                renderInput={(params) => <TextField {...params} label="Benutzer" placeholder="Name auswählen" />}
               />
-              <Typography variant="body2" color="text.secondary" sx={{ ml: 6 }}>
-                Jeder bekommt dort einen eigenen Ordner: {v.folder.trim() ? `${v.folder.trim()}/` : ''}Benutzer/&lt;Name&gt;
-              </Typography>
-            </Box>
+            )}
           </Stack>
         </DialogContent>
         <DialogActions>
