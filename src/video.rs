@@ -181,15 +181,17 @@ impl Transcoder {
         }
         // Intel Quick Sync (VAAPI) kodiert in Hardware; klappt das nicht, Software
         let hw = tokio::task::spawn_blocking(vaapi_device).await.ok().flatten();
+        let probe = src.to_path_buf();
+        let audio = tokio::task::spawn_blocking(move || audio_stream(&probe)).await.ok().flatten();
         let result = match hw {
-            Some(dev) => match self.ffmpeg(src, &tmp, &vf, Some(dev), meta.duration).await {
+            Some(dev) => match self.ffmpeg(src, &tmp, &vf, Some(dev), audio, meta.duration).await {
                 Ok(()) => Ok(()),
                 Err(e) => {
                     tracing::warn!("Hardware-Umwandlung fehlgeschlagen ({e}), versuche Software");
-                    self.ffmpeg(src, &tmp, &vf, None, meta.duration).await
+                    self.ffmpeg(src, &tmp, &vf, None, audio, meta.duration).await
                 }
             },
-            None => self.ffmpeg(src, &tmp, &vf, None, meta.duration).await,
+            None => self.ffmpeg(src, &tmp, &vf, None, audio, meta.duration).await,
         };
         if let Err(e) = result {
             let _ = tokio::fs::remove_file(&tmp).await;
@@ -201,7 +203,7 @@ impl Transcoder {
     }
 
     /// Ein ffmpeg-Lauf mit niedrigster Priorität und Fortschrittsanzeige.
-    async fn ffmpeg(&self, src: &Path, tmp: &Path, vf: &str, hw: Option<&str>, duration: Option<f64>) -> Result<(), String> {
+    async fn ffmpeg(&self, src: &Path, tmp: &Path, vf: &str, hw: Option<&str>, audio: Option<usize>, duration: Option<f64>) -> Result<(), String> {
         // nur die Hälfte der Kerne, damit der Server nutzbar (und leise) bleibt
         let threads = (std::thread::available_parallelism().map_or(2, |n| n.get()) / 2).max(1).to_string();
         let mut cmd = Command::new("ffmpeg");
@@ -211,7 +213,11 @@ impl Transcoder {
         }
         // auch das Auspacken (HEVC) nur mit begrenzt vielen Threads
         cmd.args(["-threads", &threads, "-i"]).arg(src);
-        cmd.args(["-map", "0:v:0", "-map", "0:a:0?"]);
+        cmd.args(["-map", "0:v:0"]);
+        match audio {
+            Some(i) => cmd.args(["-map", &format!("0:{i}"), "-c:a", "aac", "-b:a", "128k"]),
+            None => cmd.arg("-an"),
+        };
         match hw {
             Some(_) => cmd.args(["-vf", &format!("{vf},format=nv12,hwupload"), "-c:v", "h264_vaapi", "-qp", "23", "-profile:v", "high"]),
             None => cmd.args([
@@ -219,7 +225,7 @@ impl Transcoder {
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-profile:v", "high", "-threads", &threads,
             ]),
         };
-        cmd.args(["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]).arg(tmp);
+        cmd.args(["-movflags", "+faststart"]).arg(tmp);
         // niedrigste Priorität: Uploads, Videos ansehen und Netzlaufwerk gehen vor
         // SAFETY: nice() ist zwischen fork und exec erlaubt
         unsafe {
@@ -253,6 +259,24 @@ impl Transcoder {
         }
         Ok(())
     }
+}
+
+/// Erste Tonspur, die ffmpeg lesen kann. Neuere iPhones speichern zuerst
+/// Raumklang (APAC), den ffmpeg nicht kennt, und danach normales AAC.
+fn audio_stream(src: &Path) -> Option<usize> {
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "a", "-show_entries", "stream=index,codec_name", "-of", "json"])
+        .arg(src)
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    v["streams"]
+        .as_array()?
+        .iter()
+        .find(|s| s["codec_name"].as_str().is_some_and(|c| !matches!(c, "unknown" | "none" | "")))
+        .and_then(|s| s["index"].as_u64())
+        .map(|i| i as usize)
 }
 
 /// Wann wird automatisch umgewandelt? "now" (sofort), "night" (1–7 Uhr),
