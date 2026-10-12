@@ -1,6 +1,6 @@
 # Testbericht homevault
 
-**Ergebnis: 162 von 162 Tests bestanden.**  
+**Ergebnis: 169 von 169 Tests bestanden.**  
 Getestet am 11. Oktober 2026 auf einem frisch installierten Debian 13, Installation genau nach README.
 
 ## Fazit
@@ -21,7 +21,7 @@ Die Punkte unter „Nicht getestet“ sollten beim ersten Einsatz auf echter Har
 | Betriebssystem | Debian 13.7 „trixie“ (Container mit eigenem Docker-Dienst, wie ein eigener Server) |
 | Docker | 26.1.5 und Docker Compose 2.26.1 aus den Debian-Paketquellen |
 | Festplatten | 3 × 2 GB (Loop-Geräte), Systemplatte zum Gegenprüfen |
-| Instanzen | homevault mit Festplatten-Verwaltung und KI (Ollama), zweiter homevault als Backup- und Sync-Ziel, dritter leerer Server für die Wiederherstellung |
+| Instanzen | homevault (Host-Netzwerk) mit Festplatten-Verwaltung und KI (Ollama), zweiter homevault als Backup- und Sync-Ziel, dritter leerer Server für die Wiederherstellung |
 | Clients | `curl` (wie der Browser), `smbclient` (wie Windows/macOS), `ffprobe`, `sqlite3` |
 | Image-Größen | Web-App 1,19 GB (davon ca. 1 GB LibreOffice für die Office-Vorschau), Platten-Dienst 38 MB, Samba 73 MB |
 
@@ -29,7 +29,7 @@ Die Punkte unter „Nicht getestet“ sollten beim ersten Einsatz auf echter Har
 
 1. `tests/debian-server.sh` installiert Docker aus den Debian-Quellen, legt Datenordner und drei Test-Platten an und installiert homevault nach README (`.env` aus der Vorlage) und baut die Images dabei aus dem aktuellen Quellcode (`docker-compose.build.yml`), damit genau dieser Stand getestet wird.
 2. `tests/e2e.sh` prüft jede Funktion über dieselben Schnittstellen, die Weboberfläche und Netzlaufwerk benutzen, und vergleicht Dateien bytegenau.
-3. Zusätzlich: 32 Unit-Tests (`cargo test`), TypeScript-Prüfung und Bedienung im Browser (Einrichtungsassistent, Rahmenauswahl, Vorschauen, Einstellungen, Festplatten-Seite, Vollbildansicht mit Tastatur, Benutzer anlegen).
+3. Zusätzlich: 33 Unit-Tests (`cargo test`), TypeScript-Prüfung und Bedienung im Browser (Einrichtungsassistent, Rahmenauswahl, Vorschauen, Einstellungen, Festplatten-Seite, Vollbildansicht mit Tastatur, Benutzer anlegen).
 
 ## Ergebnisse
 
@@ -245,6 +245,9 @@ Ein zweiter homevault („Papas NAS“) dient als SMB-Backup-Ziel, ein dritter, 
 | L10 | Datei an den Originalort zurückholen | ✅ bestanden |
 | L11 | Datei ist wieder da (identisch) | ✅ bestanden |
 | L12 | Ordner in neuen Ordner „Wiederhergestellt …“ zurückholen | ✅ bestanden |
+| L17 | Netzwerkadapter des Servers werden angezeigt | ✅ bestanden |
+| L18 | Backup über einen bestimmten Adapter (eth0) | ✅ bestanden |
+| L19 | Adapter ohne Adresse: Backup läuft trotzdem (normaler Weg) | ✅ bestanden |
 | L13 | Neuer Server: Komplett-Wiederherstellung startet | ✅ bestanden |
 | L14 | Neuer Server übernimmt Benutzer aus dem Backup | ✅ bestanden |
 | L15 | Anmeldung mit altem Konto funktioniert | ✅ bestanden |
@@ -314,6 +317,10 @@ Regeln „Quelle → Ziel“ gegen den zweiten homevault als NAS (SMB). Änderun
 | S10 | …in seinen eigenen Ordner auf dem NAS | ✅ bestanden |
 | S11 | Benutzer sieht nur seine eigenen Regeln | ✅ bestanden |
 | S12 | Admin sieht alle Regeln | ✅ bestanden |
+| S16 | NAS nur für ausgewählte Benutzer: andere sehen es nicht | ✅ bestanden |
+| S17 | …und dürfen dort nichts anlegen | ✅ bestanden |
+| S18 | Benutzer freigeschaltet: NAS ist wählbar | ✅ bestanden |
+| S19 | Freigabe wird beim NAS angezeigt | ✅ bestanden |
 | S13 | Zielordner mit fremden Dateien: erst nachfragen | ✅ bestanden |
 | S14 | Fremde Dateien bleiben unangetastet | ✅ bestanden |
 | S15 | Pausierte Regel überträgt nichts | ✅ bestanden |
@@ -412,6 +419,7 @@ Lokal mit dem Standardmodell `qwen2.5:3b` geprüft (im Debian-Test nur das klein
 | Browser auf iPhone/Android | Oberfläche im Desktop-Browser und in Handy-Größe geprüft, nicht auf echten Geräten. | Gering bis mittel (Long-Press, PDF-Ansicht auf iOS). |
 | Große Bibliotheken (z. B. 50.000 Fotos, mehrere TB) | Testdaten nur wenige MB. | Erster Index-Durchlauf, Video-Umwandlung und Spiegel-Anlage dauern dann deutlich länger. Spiegel am besten anlegen, bevor viele Daten da sind. |
 | Zeitgesteuerte Abläufe (Backup um 3 Uhr, monatliche Datenprüfung, Papierkorb nach 30 Tagen) | Zeitplan-Logik per Unit-Test geprüft, nicht über echte Tage. | Nach der ersten Nacht den Backup-Verlauf ansehen. |
+| Zweiter Netzwerkadapter im selben Netz | Im Test nur ein Adapter (Bindung an seine Adresse geprüft, L17–L19). Auf dem echten Server Routing-Regel eingerichtet und geprüft (`ip route get … from 192.168.178.250` → USB-Adapter). | Nach dem Einstecken des Kabels einmal ein Backup über den Adapter laufen lassen. |
 | KI-Geschwindigkeit auf dem echten Server | Getestet auf schnellerer Hardware. | Auf einem älteren Core i3 ca. 30–90 s pro Dokument; läuft im Hintergrund. |
 | Scanner, die per SMB in den Eingang speichern | Mit `smbclient` nachgestellt. | Gering; Scanner auf SMB2/3 und PDF stellen. |
 | Stromausfall während Spiegel-Anlage oder Plattentausch | Nicht simuliert. | Diese Vorgänge nur mit stabiler Stromversorgung starten (USV empfohlen). |
