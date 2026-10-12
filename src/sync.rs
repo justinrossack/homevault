@@ -585,7 +585,8 @@ pub async fn list(State(state): State<AppState>, Extension(me): Extension<Curren
                 }
             }
             // NAS, die man als Ziel wählen darf (Admin: alle)
-            let filter = if me2.admin { "1 = 1" } else { ALLOWED };
+            // Admin: alle (die Bedingung nutzt ?1 trotzdem, damit die Parameter passen)
+            let filter = if me2.admin { "?1 IS NOT NULL" } else { ALLOWED };
             let selectable: Vec<Value> = c
                 .prepare(&format!("SELECT t.id, t.name, t.host, t.share, t.folder FROM backup_targets t WHERE {filter} ORDER BY t.name"))?
                 .query_map([me2.id], |r| {

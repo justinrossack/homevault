@@ -213,18 +213,6 @@ if [ -n "$NAS2_HOST" ]; then
   post "$ADM" /api/backups/$BID/run '{}' >/dev/null
   t L6 "Gelöschtes bleibt im Backup unter .versionen" until_ok 60 bash -c "ls /srv/nas2/Gemeinsam/backup/.versionen/*/Gemeinsam/video.mp4"
 
-  # Netzwerkadapter wählen (Host-Netzwerk)
-  NET=$(get "$ADM" /api/network)
-  IF1=$(echo "$NET" | jq -r '[.adapters[] | select(.ipv4 != null)][0].name')
-  t L6a "Netzwerkadapter des Servers werden angezeigt" jqt "$NET" '[.adapters[] | select(.ipv4 != null)] | length >= 1'
-  curl -s -b $ADM -X PATCH -H "$J" -d "{$TGT,\"iface\":\"$IF1\"}" $B/api/backups/$BID >/dev/null
-  post "$ADM" /api/backups/$BID/run '{}' >/dev/null
-  t L6b "Backup über einen bestimmten Adapter ($IF1)" until_ok 60 bash -c "curl -s -b $ADM $B/api/backups | jq -e '.running == null and .targets[0].last_run.status == \"ok\" and .targets[0].iface == \"$IF1\"'"
-  curl -s -b $ADM -X PATCH -H "$J" -d "{$TGT,\"iface\":\"gibtsnicht0\"}" $B/api/backups/$BID >/dev/null
-  post "$ADM" /api/backups/$BID/run '{}' >/dev/null
-  t L6c "Adapter ohne Adresse: Backup läuft trotzdem (normaler Weg)" until_ok 60 bash -c "curl -s -b $ADM $B/api/backups | jq -e '.running == null and .targets[0].last_run.status == \"ok\"' && docker logs ${CONTAINER_PREFIX:-homevault} 2>&1 | grep -q 'gibtsnicht0 hat keine Adresse'"
-  curl -s -b $ADM -X PATCH -H "$J" -d "{$TGT}" $B/api/backups/$BID >/dev/null
-
   # Wiederherstellen
   VER=$(get "$ADM" /api/backups/$BID/versions)
   t L7 "Backup-Versionen werden aufgelistet" jqt "$VER" '(.versions | length) >= 2 and .versions[0].id == ""'
@@ -234,6 +222,18 @@ if [ -n "$NAS2_HOST" ]; then
   t L10 "Datei an den Originalort zurückholen" has "$(post "$ADM" /api/backups/$BID/restore "{\"version\":\"$V1\",\"paths\":[\"Gemeinsam/video.mp4\"],\"mode\":\"original\"}")" '"ok":true'
   t L11 "Datei ist wieder da (identisch)" until_ok 30 bash -c "curl -s -b $ADM $B/api/backups | jq -e '.restore.ok == true' >/dev/null && cmp -s $MEDIA/Gemeinsam/video.mp4 $A/video.mp4"
   t L12 "Ordner in neuen Ordner „Wiederhergestellt …“ zurückholen" bash -c "curl -s -b $ADM -H '$J' -d '{\"version\":\"\",\"paths\":[\"Gemeinsam\"],\"mode\":\"folder\"}' $B/api/backups/$BID/restore | grep -q ok; sleep 6; ls -d $MEDIA/Gemeinsam/Wiederhergestellt* >/dev/null"
+  # Netzwerkadapter wählen (Host-Netzwerk)
+  NET=$(get "$ADM" /api/network)
+  IF1=$(echo "$NET" | jq -r '[.adapters[] | select(.ipv4 != null)][0].name')
+  t L17 "Netzwerkadapter des Servers werden angezeigt" jqt "$NET" '[.adapters[] | select(.ipv4 != null)] | length >= 1'
+  curl -s -b $ADM -X PATCH -H "$J" -d "{$TGT,\"iface\":\"$IF1\"}" $B/api/backups/$BID >/dev/null
+  post "$ADM" /api/backups/$BID/run '{}' >/dev/null
+  t L18 "Backup über einen bestimmten Adapter ($IF1)" until_ok 60 bash -c "curl -s -b $ADM $B/api/backups | jq -e '.running == null and .targets[0].last_run.status == \"ok\" and .targets[0].iface == \"$IF1\"'"
+  curl -s -b $ADM -X PATCH -H "$J" -d "{$TGT,\"iface\":\"gibtsnicht0\"}" $B/api/backups/$BID >/dev/null
+  post "$ADM" /api/backups/$BID/run '{}' >/dev/null
+  t L19 "Adapter ohne Adresse: Backup läuft trotzdem (normaler Weg)" until_ok 60 bash -c "curl -s -b $ADM $B/api/backups | jq -e '.running == null and .targets[0].last_run.status == \"ok\"' && docker logs ${CONTAINER_PREFIX:-homevault} 2>&1 | grep -q 'gibtsnicht0 hat keine Adresse'"
+  curl -s -b $ADM -X PATCH -H "$J" -d "{$TGT}" $B/api/backups/$BID >/dev/null
+
   if [ -n "${RESTORE_URL:-}" ]; then
     R=$RESTORE_URL
     t L13 "Neuer Server: Komplett-Wiederherstellung startet" has "$(curl -s -H "$J" -d "{\"host\":\"$NAS2_HOST\",\"port\":$NAS2_PORT,\"share\":\"Gemeinsam\",\"folder\":\"backup\",\"username\":\"papa\",\"password\":\"papa1234\"}" $R/api/setup/restore)" '"ok":true'
