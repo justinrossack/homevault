@@ -105,6 +105,12 @@ if [ "$PUID" -eq 0 ]; then
 fi
 sed -i "s|^MEDIA_DIR=.*|MEDIA_DIR=$MEDIA|; s|^PUID=.*|PUID=$PUID|; s|^PGID=.*|PGID=$PGID|" "$ENV_NEW"
 
+# Intel Quick Sync: Zugriff auf die Grafik-Hardware für die Video-Umwandlung
+RENDER_GID=$(getent group render | cut -d: -f3 || true)
+if [ -n "$RENDER_GID" ]; then
+  sed -i "s|^#RENDER_GID=.*|RENDER_GID=$RENDER_GID|" "$ENV_NEW"
+fi
+
 LISTEN_445=$(ss -Hltn 'sport = :445' 2>/dev/null || true)
 if [ -n "$LISTEN_445" ]; then
   echo "  Hinweis: Port 445 ist schon belegt (anderer Samba?). Das Netzlaufwerk nutzt deshalb Port 1445."

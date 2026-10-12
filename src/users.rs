@@ -310,6 +310,8 @@ pub struct SettingsBody {
     auto_transcode: Option<bool>,
     /// Eingangs-Ordner automatisch einsortieren
     inbox_enabled: Option<bool>,
+    /// Videos umwandeln: "now" | "night" | "demand"
+    transcode_mode: Option<String>,
 }
 
 /// Einstellungen für die Einstellungsseite (Admin).
@@ -318,18 +320,24 @@ pub async fn get_settings(
     Extension(me): Extension<CurrentUser>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&me)?;
-    let (name, days, auto, inbox) = state
+    let (name, days, mode, inbox) = state
         .db
         .call(|c| {
             Ok((
                 db::get_setting(c, "server_name")?.unwrap_or_else(|| DEFAULT_SERVER_NAME.into()),
                 crate::trash::trash_days(c),
-                db::get_setting(c, "auto_transcode")?.as_deref() != Some("0"),
+                crate::video::mode(c),
                 crate::inbox::enabled(c),
             ))
         })
         .await?;
-    Ok(Json(json!({ "server_name": name, "trash_days": days, "auto_transcode": auto, "inbox_enabled": inbox })))
+    Ok(Json(json!({
+        "server_name": name,
+        "trash_days": days,
+        "auto_transcode": mode != "demand",
+        "transcode_mode": mode,
+        "inbox_enabled": inbox,
+    })))
 }
 
 pub async fn update_settings(
@@ -354,7 +362,13 @@ pub async fn update_settings(
                 db::set_setting(conn, "trash_days", &days.to_string())?;
             }
             if let Some(auto) = b.auto_transcode {
-                db::set_setting(conn, "auto_transcode", if auto { "1" } else { "0" })?;
+                db::set_setting(conn, "transcode_mode", if auto { "now" } else { "demand" })?;
+            }
+            if let Some(m) = b.transcode_mode {
+                if !matches!(m.as_str(), "now" | "night" | "demand") {
+                    return Err(AppError::BadRequest("Ungültige Einstellung für Videos".into()));
+                }
+                db::set_setting(conn, "transcode_mode", &m)?;
             }
             if let Some(on) = b.inbox_enabled {
                 db::set_setting(conn, "inbox_enabled", if on { "1" } else { "0" })?;

@@ -249,6 +249,8 @@ export interface Settings {
   server_name: string
   trash_days: number
   auto_transcode: boolean
+  /** sofort, nur nachts oder erst beim Abspielen */
+  transcode_mode: 'now' | 'night' | 'demand'
   inbox_enabled: boolean
 }
 

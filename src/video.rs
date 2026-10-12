@@ -134,7 +134,7 @@ impl Transcoder {
         let rows: Vec<(String, Option<String>)> = self
             .db
             .call(|c| {
-                if db::get_setting(c, "auto_transcode")?.as_deref() == Some("0") {
+                if !may_run_now(&mode(c), chrono::Local::now()) {
                     return Ok(Vec::new());
                 }
                 Ok(c.prepare(&format!(
@@ -179,19 +179,56 @@ impl Transcoder {
                 ",zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv",
             );
         }
-        vf.push_str(",format=yuv420p");
-        // nur die Hälfte der Kerne, damit der Server nutzbar bleibt
-        let threads = (std::thread::available_parallelism().map_or(2, |n| n.get()) / 2).max(1).to_string();
+        // Intel Quick Sync (VAAPI) kodiert in Hardware; klappt das nicht, Software
+        let hw = tokio::task::spawn_blocking(vaapi_device).await.ok().flatten();
+        let result = match hw {
+            Some(dev) => match self.ffmpeg(src, &tmp, &vf, Some(dev), meta.duration).await {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    tracing::warn!("Hardware-Umwandlung fehlgeschlagen ({e}), versuche Software");
+                    self.ffmpeg(src, &tmp, &vf, None, meta.duration).await
+                }
+            },
+            None => self.ffmpeg(src, &tmp, &vf, None, meta.duration).await,
+        };
+        if let Err(e) = result {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e);
+        }
+        tokio::fs::rename(&tmp, &out).await.map_err(|e| e.to_string())?;
+        tracing::info!("Video umgewandelt{}: {name}", if hw.is_some() { " (Quick Sync)" } else { "" });
+        Ok(())
+    }
 
-        let mut child = Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-nostats", "-progress", "pipe:1", "-i"])
-            .arg(src)
-            .args([
-                "-map", "0:v:0", "-map", "0:a:0?", "-vf", &vf,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-profile:v", "high",
-                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-threads", &threads,
-            ])
-            .arg(&tmp)
+    /// Ein ffmpeg-Lauf mit niedrigster Priorität und Fortschrittsanzeige.
+    async fn ffmpeg(&self, src: &Path, tmp: &Path, vf: &str, hw: Option<&str>, duration: Option<f64>) -> Result<(), String> {
+        // nur die Hälfte der Kerne, damit der Server nutzbar (und leise) bleibt
+        let threads = (std::thread::available_parallelism().map_or(2, |n| n.get()) / 2).max(1).to_string();
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-v", "error", "-y", "-nostats", "-progress", "pipe:1"]);
+        if let Some(dev) = hw {
+            cmd.args(["-vaapi_device", dev]);
+        }
+        // auch das Auspacken (HEVC) nur mit begrenzt vielen Threads
+        cmd.args(["-threads", &threads, "-i"]).arg(src);
+        cmd.args(["-map", "0:v:0", "-map", "0:a:0?"]);
+        match hw {
+            Some(_) => cmd.args(["-vf", &format!("{vf},format=nv12,hwupload"), "-c:v", "h264_vaapi", "-qp", "23", "-profile:v", "high"]),
+            None => cmd.args([
+                "-vf", &format!("{vf},format=yuv420p"),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-profile:v", "high", "-threads", &threads,
+            ]),
+        };
+        cmd.args(["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]).arg(tmp);
+        // niedrigste Priorität: Uploads, Videos ansehen und Netzlaufwerk gehen vor
+        // SAFETY: nice() ist zwischen fork und exec erlaubt
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::nice(19);
+                Ok(())
+            });
+        }
+        let mut child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -199,7 +236,7 @@ impl Transcoder {
             .map_err(|e| format!("ffmpeg nicht verfügbar: {e}"))?;
 
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        let duration = meta.duration.unwrap_or(0.0);
+        let duration = duration.unwrap_or(0.0);
         while let Ok(Some(line)) = lines.next_line().await {
             if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok()) {
                 if duration > 0.0 {
@@ -211,14 +248,52 @@ impl Transcoder {
         }
         let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
         if !output.status.success() {
-            let _ = tokio::fs::remove_file(&tmp).await;
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(err.lines().last().unwrap_or("ffmpeg-Fehler").to_owned());
         }
-        tokio::fs::rename(&tmp, &out).await.map_err(|e| e.to_string())?;
-        tracing::info!("Video umgewandelt: {name}");
         Ok(())
     }
+}
+
+/// Wann wird automatisch umgewandelt? "now" (sofort), "night" (1–7 Uhr),
+/// "demand" (nur wenn jemand das Video ansehen will)
+pub fn mode(c: &rusqlite::Connection) -> String {
+    match db::get_setting(c, "transcode_mode").ok().flatten() {
+        Some(m) if matches!(m.as_str(), "now" | "night" | "demand") => m,
+        // ältere Einstellung „automatisch umwandeln“ aus/an
+        _ if db::get_setting(c, "auto_transcode").ok().flatten().as_deref() == Some("0") => "demand".into(),
+        _ => "now".into(),
+    }
+}
+
+fn may_run_now(mode: &str, now: chrono::DateTime<chrono::Local>) -> bool {
+    use chrono::Timelike;
+    match mode {
+        "now" => true,
+        "night" => (1..7).contains(&now.hour()),
+        _ => false,
+    }
+}
+
+/// Gerät für Intel Quick Sync, falls vorhanden und nutzbar (einmal geprüft).
+fn vaapi_device() -> Option<&'static str> {
+    static DEV: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *DEV.get_or_init(|| {
+        let dev = "/dev/dri/renderD128";
+        std::fs::OpenOptions::new().read(true).write(true).open(dev).ok()?;
+        // Probe: ein Bild in Hardware kodieren
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-vaapi_device", dev, "-f", "lavfi", "-i", "testsrc=size=320x240:rate=1", "-frames:v", "1"])
+            .args(["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-f", "null", "-"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok {
+            tracing::info!("Videos werden mit Intel Quick Sync umgewandelt");
+        }
+        ok.then_some(dev)
+    })
 }
 
 /// Codec eines Videos: erst aus dem Index, sonst direkt per ffprobe.
@@ -291,6 +366,15 @@ pub async fn web(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn night_mode_only_between_one_and_seven() {
+        use chrono::TimeZone;
+        let at = |h| chrono::Local.with_ymd_and_hms(2026, 10, 12, h, 30, 0).earliest().unwrap();
+        assert!(may_run_now("now", at(14)));
+        assert!(may_run_now("night", at(3)) && !may_run_now("night", at(7)) && !may_run_now("night", at(0)));
+        assert!(!may_run_now("demand", at(3)));
+    }
 
     #[test]
     fn welche_videos_umgewandelt_werden() {

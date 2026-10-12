@@ -36,6 +36,8 @@ ARG OFFICE=true
 # tesseract: Texterkennung für gescannte Dokumente im Eingangs-Ordner
 RUN apk add --no-cache ffmpeg libheif-tools rclone tzdata poppler-utils tini \
        tesseract-ocr tesseract-ocr-data-deu tesseract-ocr-data-eng \
+    # Intel Quick Sync (Video-Umwandlung in Hardware): ältere (i965) und neuere Chips
+    && if [ "$(uname -m)" = "x86_64" ]; then apk add --no-cache libva-intel-driver intel-media-driver; fi \
     && if [ "$OFFICE" = "true" ]; then \
          apk add --no-cache libreoffice-writer libreoffice-calc libreoffice-impress font-liberation ttf-dejavu; \
        fi \

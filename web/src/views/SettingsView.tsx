@@ -66,6 +66,12 @@ interface Tab {
   render: () => ReactNode
 }
 
+const TRANSCODE_SAVED = {
+  now: 'Videos werden gleich nach dem Hochladen umgewandelt',
+  night: 'Videos werden nachts zwischen 1 und 7 Uhr umgewandelt',
+  demand: 'Videos werden erst beim Abspielen umgewandelt',
+}
+
 export default function SettingsView({ tab }: { tab?: string }) {
   const shell = useShell()
   const admin = shell.user.admin
@@ -458,26 +464,22 @@ function ServerSection() {
             </MenuItem>
           ))}
         </TextField>
-        <Box>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={settings.auto_transcode}
-                onChange={(e) =>
-                  save(
-                    { auto_transcode: e.target.checked },
-                    e.target.checked ? 'Videos werden im Hintergrund umgewandelt' : 'Nur noch bei Bedarf umwandeln',
-                  )
-                }
-              />
-            }
-            label="iPhone-Videos (HEVC) im Hintergrund für alle Browser umwandeln"
-          />
-          <Typography variant="body2" color="text.secondary" sx={{ ml: 6 }}>
-            Ausgeschaltet wird ein Video erst umgewandelt, wenn es jemand in Chrome oder Firefox abspielen möchte. Das spart Rechenzeit und
-            Platz, beim ersten Abspielen muss man aber warten.
-          </Typography>
-        </Box>
+        <TextField
+          select
+          label="iPhone-Videos (HEVC) für alle Browser umwandeln"
+          value={settings.transcode_mode}
+          onChange={(e) =>
+            save(
+              { transcode_mode: e.target.value as Settings['transcode_mode'] },
+              TRANSCODE_SAVED[e.target.value as Settings['transcode_mode']],
+            )
+          }
+          helperText="Beim Umwandeln rechnet der Server viel (und der Lüfter wird lauter). Nachts merkt das niemand; „beim Abspielen“ spart am meisten, dafür wartet man beim ersten Mal."
+        >
+          <MenuItem value="now">Sofort nach dem Hochladen</MenuItem>
+          <MenuItem value="night">Nur nachts (1–7 Uhr)</MenuItem>
+          <MenuItem value="demand">Erst beim Abspielen</MenuItem>
+        </TextField>
         <Box>
           <FormControlLabel
             control={

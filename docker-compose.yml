@@ -29,6 +29,14 @@ services:
       # rslave: sieht den Speicherverbund, sobald der Platten-Dienst ihn einhängt
       - ${MEDIA_DIR:?MEDIA_DIR in .env setzen}:/data:${MEDIA_PROPAGATION:-rw}
       - cache:/cache
+      # Intel Quick Sync für die Video-Umwandlung. Ohne Grafik-Hardware wird
+      # einfach per Software umgewandelt.
+      - /dev/dri:/dev/dri
+    device_cgroup_rules:
+      - "c 226:* rmw"
+    group_add:
+      # Gruppe „render“ des Servers (getent group render)
+      - "${RENDER_GID:-992}"
     depends_on:
       disks:
         condition: service_healthy
