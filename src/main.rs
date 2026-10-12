@@ -10,6 +10,7 @@ mod geo;
 mod inbox;
 mod index;
 mod library;
+mod net;
 mod media;
 mod paths;
 mod restore;
@@ -226,6 +227,7 @@ async fn main() {
         .route("/api/albums/{id}/remove", post(library::remove_items))
         .route("/api/index", get(library::index_status))
         .route("/api/index/rescan", post(library::rescan))
+        .route("/api/network", get(net::list))
         .route("/api/inbox", get(inbox::status))
         .route("/api/inbox/{id}/undo", post(inbox::undo))
         .route("/api/sync", get(sync::list).post(sync::create))

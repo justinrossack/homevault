@@ -36,7 +36,16 @@ import StopRoundedIcon from '@mui/icons-material/StopRounded'
 import NetworkCheckRoundedIcon from '@mui/icons-material/NetworkCheckRounded'
 import RestoreRoundedIcon from '@mui/icons-material/RestoreRounded'
 import RestoreDialog from './RestoreDialog'
-import { api, formatSize, type BackupProgress, type BackupRun, type BackupTarget, type BackupTargetInput, type RestoreResult } from '../api'
+import {
+  api,
+  formatSize,
+  type BackupProgress,
+  type BackupRun,
+  type BackupTarget,
+  type BackupTargetInput,
+  type NetworkAdapter,
+  type RestoreResult,
+} from '../api'
 import { useShell } from '../shell'
 
 const WEEKDAYS = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag']
@@ -59,6 +68,16 @@ const EMPTY: BackupTargetInput = {
   enabled: true,
   user_sync: 'none',
   sync_users: [],
+  iface: '',
+}
+
+const ADAPTER_KIND = { lan: 'LAN', usb: 'USB-LAN', wlan: 'WLAN' }
+
+function adapterLabel(a: NetworkAdapter) {
+  const parts = [a.name, ADAPTER_KIND[a.kind], a.ipv4 ?? 'keine Adresse']
+  if (a.speed_mbit) parts.push(a.speed_mbit >= 1000 ? `${a.speed_mbit / 1000} Gbit/s` : `${a.speed_mbit} Mbit/s`)
+  else if (!a.up) parts.push('kein Kabel')
+  return parts.join(' · ')
 }
 
 /** Ohne Bereiche dient das Ziel nur als Verbindung für den Live-Sync */
@@ -306,6 +325,7 @@ function TargetDialog({
   const [busy, setBusy] = useState<'test' | 'save' | null>(null)
   const [error, setError] = useState('')
   const [userNames, setUserNames] = useState<string[]>([])
+  const [adapters, setAdapters] = useState<NetworkAdapter[]>([])
 
   useEffect(() => {
     if (state) {
@@ -314,6 +334,10 @@ function TargetDialog({
         .users()
         .then((r) => setUserNames(r.users.map((u) => u.name)))
         .catch(() => setUserNames([]))
+      api
+        .network()
+        .then((r) => setAdapters(r.adapters))
+        .catch(() => setAdapters([]))
       setTest(null)
       setError('')
     }
@@ -507,6 +531,22 @@ function TargetDialog({
               <MenuItem value={0}>Für immer</MenuItem>
             </TextField>
             <FormControlLabel control={<Switch checked={v.enabled} onChange={(e) => set('enabled', e.target.checked)} />} label="Aktiv" />
+
+            <TextField
+              select
+              label="Netzwerkadapter"
+              value={v.iface}
+              onChange={(e) => set('iface', e.target.value)}
+              helperText="Backup, Wiederherstellen und Live-Sync zu diesem NAS laufen über diesen Anschluss des Servers"
+            >
+              <MenuItem value="">Automatisch</MenuItem>
+              {adapters.map((a) => (
+                <MenuItem key={a.name} value={a.name}>
+                  {adapterLabel(a)}
+                </MenuItem>
+              ))}
+              {v.iface && !adapters.some((a) => a.name === v.iface) && <MenuItem value={v.iface}>{v.iface} (nicht vorhanden)</MenuItem>}
+            </TextField>
 
             <Typography variant="subtitle2" sx={{ pt: 1 }}>
               Live-Sync

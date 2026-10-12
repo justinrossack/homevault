@@ -68,10 +68,12 @@ pub(crate) struct Target {
     /// Wer seinen Privat-Ordner selbst hierher synchronisieren darf:
     /// 0 = niemand, 1 = alle, 2 = nur ausgewählte (sync_target_users)
     pub(crate) user_sync: i64,
+    /// Netzwerkadapter, z. B. "enx0000cd2316bf" ("" = automatisch)
+    pub(crate) iface: String,
 }
 
 const TARGET_COLS: &str = "id, name, host, port, share, folder, username, password, include_shared, include_private, \
-                           include_db, schedule, time, weekday, keep_days, enabled, created_at, user_sync";
+                           include_db, schedule, time, weekday, keep_days, enabled, created_at, user_sync, iface";
 
 fn read_target(r: &rusqlite::Row) -> rusqlite::Result<Target> {
     Ok(Target {
@@ -93,6 +95,7 @@ fn read_target(r: &rusqlite::Row) -> rusqlite::Result<Target> {
         enabled: r.get(15)?,
         created_at: r.get(16)?,
         user_sync: r.get(17)?,
+        iface: r.get(18)?,
     })
 }
 
@@ -144,6 +147,7 @@ impl Target {
             "keep_days": self.keep_days,
             "enabled": self.enabled,
             "location": self.display(),
+            "iface": self.iface,
             "user_sync": match self.user_sync {
                 1 => "all",
                 2 => "selected",
@@ -514,7 +518,7 @@ pub(crate) async fn rclone_env(t: &Target) -> Result<Vec<(String, String)>, Stri
         .map_err(|e| e.to_string())?;
     let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
     let obscured = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    Ok(vec![
+    let mut env = vec![
         ("RCLONE_SMB_HOST".into(), t.host.clone()),
         ("RCLONE_SMB_PORT".into(), t.port.to_string()),
         ("RCLONE_SMB_USER".into(), t.username.clone()),
@@ -523,7 +527,20 @@ pub(crate) async fn rclone_env(t: &Target) -> Result<Vec<(String, String)>, Stri
         ("RCLONE_TIMEOUT".into(), "2m".into()),
         // keine rclone.conf nötig
         ("RCLONE_CONFIG".into(), "/dev/null".into()),
-    ])
+    ];
+    // über einen bestimmten Netzwerkadapter: von seiner Adresse aus verbinden
+    // (die Routing-Regel auf dem Server schickt das dann über diesen Adapter)
+    if !t.iface.is_empty() {
+        match crate::net::ipv4_of(&t.iface) {
+            Some(ip) => env.push(("RCLONE_BIND".into(), ip.to_string())),
+            None => tracing::warn!(
+                "„{}“: Netzwerkadapter {} hat keine Adresse (Kabel?), es geht über den normalen Weg",
+                t.name,
+                t.iface
+            ),
+        }
+    }
+    Ok(env)
 }
 
 /// Kurzer rclone-Aufruf, gibt stdout zurück oder die letzte Fehlerzeile.
@@ -601,6 +618,9 @@ pub struct TargetBody {
     /// bei "selected": diese Benutzer
     #[serde(default)]
     sync_users: Vec<String>,
+    /// Netzwerkadapter ("" = automatisch)
+    #[serde(default)]
+    iface: String,
 }
 
 fn default_name() -> String {
@@ -644,6 +664,7 @@ impl TargetBody {
             enabled: true,
             created_at: 0,
             user_sync: 0,
+            iface: self.iface,
         }
     }
 
@@ -676,6 +697,10 @@ impl TargetBody {
         }
         if self.username.is_empty() {
             return bad("Benutzername fehlt");
+        }
+        self.iface = self.iface.trim().to_owned();
+        if !self.iface.chars().all(|c| c.is_ascii_alphanumeric() || "-_.@".contains(c)) || self.iface.len() > 32 {
+            return bad("Ungültiger Netzwerkadapter");
         }
         if !matches!(self.user_sync.as_str(), "none" | "all" | "selected") {
             return bad("Ungültige Freigabe für Benutzer");
@@ -803,11 +828,11 @@ pub async fn create(
             let users = sync_user_ids(c, &b.sync_users)?;
             c.execute(
                 "INSERT INTO backup_targets (name, host, port, share, folder, username, password, include_shared,
-                     include_private, include_db, schedule, time, weekday, keep_days, enabled, created_at, user_sync)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     include_private, include_db, schedule, time, weekday, keep_days, enabled, created_at, user_sync, iface)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     b.name, b.host, b.port, b.share, b.folder, b.username, password, b.include_shared, b.include_private,
-                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, db::now(), b.user_sync_mode()
+                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, db::now(), b.user_sync_mode(), b.iface
                 ],
             )?;
             let id = c.last_insert_rowid();
@@ -836,11 +861,11 @@ pub async fn update(
             c.execute(
                 "UPDATE backup_targets SET name = ?, host = ?, port = ?, share = ?, folder = ?, username = ?, password = ?,
                      include_shared = ?, include_private = ?, include_db = ?, schedule = ?, time = ?, weekday = ?,
-                     keep_days = ?, enabled = ?, user_sync = ?
+                     keep_days = ?, enabled = ?, user_sync = ?, iface = ?
                  WHERE id = ?",
                 params![
                     b.name, b.host, b.port, b.share, b.folder, b.username, password, b.include_shared, b.include_private,
-                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, b.user_sync_mode(), id
+                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, b.user_sync_mode(), b.iface, id
                 ],
             )?;
             set_sync_users(c, id, &users)?;
@@ -992,6 +1017,7 @@ mod tests {
             enabled: true,
             created_at: 0,
             user_sync: 0,
+            iface: String::new(),
         }
     }
 
@@ -1044,6 +1070,7 @@ mod tests {
             enabled: true,
             user_sync: "none".into(),
             sync_users: Vec::new(),
+            iface: String::new(),
         };
         b.validate().unwrap();
         assert_eq!((b.name.as_str(), b.host.as_str(), b.share.as_str(), b.folder.as_str()), ("Papas NAS", "192.168.1.20", "backup", "homevault"));

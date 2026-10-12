@@ -62,7 +62,8 @@ curl -s -H 'content-type: application/json' -d '{"server_name":"Papas NAS","name
 docker ps --format '{{.Names}}: {{.Status}}'
 docker images --format '{{.Repository}}: {{.Size}}' | grep -E '^homevault-'
 
-GW=$(docker exec homevault sh -c "ip route | awk '/default/ {print \$3}'")
+# Web-App läuft im Host-Netz: das „Papas NAS“ ist über die Adresse dieses Servers erreichbar
+GW=$(hostname -I | awk '{print $1}')
 log "Ende-zu-Ende-Test (Backup-Ziel: $GW:1445)"
 cd /opt/homevault
 B=http://127.0.0.1:8080 ASSETS=/opt/homevault/tests/assets SRC=/opt/homevault NAS2_HOST=$GW NAS2_PORT=1445 \

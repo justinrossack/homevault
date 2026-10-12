@@ -45,5 +45,5 @@ COPY --from=build /app/target/release/homevault /usr/local/bin/homevault
 ENV DATA_DIR=/data CACHE_DIR=/cache PORT=8080 HOME=/tmp
 USER 1000:1000
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:8080/api/health || exit 1
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- "http://127.0.0.1:${PORT}/api/health" || exit 1
 ENTRYPOINT ["/sbin/tini", "--", "homevault"]

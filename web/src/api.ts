@@ -78,6 +78,18 @@ export interface BackupTargetInput {
   user_sync: 'none' | 'all' | 'selected'
   /** bei 'selected' */
   sync_users: string[]
+  /** Netzwerkadapter für Backup/Sync, '' = automatisch */
+  iface: string
+}
+
+/** Netzwerkadapter des Servers */
+export interface NetworkAdapter {
+  name: string
+  ipv4: string | null
+  up: boolean
+  speed_mbit: number | null
+  mac: string | null
+  kind: 'lan' | 'usb' | 'wlan'
 }
 
 export interface BackupTarget extends BackupTargetInput {
@@ -369,6 +381,7 @@ export const api = {
   changePassword: (current: string, next: string) => request('POST', '/api/me/password', { current, new: next }),
 
   // Verwaltung (Admin)
+  network: () => request<{ adapters: NetworkAdapter[] }>('GET', '/api/network'),
   users: () => request<{ users: (User & { created_at: number; quota_bytes?: number | null })[] }>('GET', '/api/users'),
   createUser: (name: string, password: string, admin: boolean) => request('POST', '/api/users', { name, password, admin }),
   updateUser: (name: string, patch: { password?: string; admin?: boolean; quota_bytes?: number }) =>

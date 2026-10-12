@@ -6,21 +6,24 @@ services:
     image: ghcr.io/justinrossack/homevault:${HOMEVAULT_VERSION:-latest}
     container_name: ${CONTAINER_PREFIX:-homevault}
     user: "${PUID:-1000}:${PGID:-1000}"
-    ports:
-      - "${WEB_PORT:-8080}:8080"
+    # im Netzwerk des Servers: sieht alle Netzwerkadapter, damit Backup und
+    # Sync über einen bestimmten Adapter laufen können (pro NAS einstellbar)
+    network_mode: host
     # Beim ersten Aufruf im Browser startet der Einrichtungsassistent
     # (Admin-Konto, Servername, Festplatten, weitere Benutzer).
     environment:
+      PORT: ${WEB_PORT:-8080}
       # Zeitzone für Backup-Zeitpläne
       TZ: ${TZ:-Europe/Berlin}
       INDEX_INTERVAL_MINUTES: ${INDEX_INTERVAL_MINUTES:-10}
       # optional: ersten Admin ohne Assistent anlegen
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-      DISK_AGENT_URL: ${DISK_AGENT_URL:-}
+      # Platten-Dienst und KI sind nur auf dem Server selbst erreichbar (127.0.0.1)
+      DISK_AGENT_URL: ${DISK_AGENT_URL:+http://127.0.0.1:8091}
       DISK_AGENT_TOKEN: ${DISK_AGENT_TOKEN:-}
       # optional: lokale KI für den Eingangs-Ordner (Dokumente benennen/sortieren)
-      AI_URL: ${AI_URL:-}
+      AI_URL: ${AI_URL:+http://127.0.0.1:11434}
       AI_MODEL: ${AI_MODEL:-qwen2.5:3b}
     volumes:
       # rslave: sieht den Speicherverbund, sobald der Platten-Dienst ihn einhängt
@@ -48,7 +51,7 @@ services:
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       # wartet mit der Freigabe, bis der Speicherverbund eingehängt ist
-      DISK_AGENT_URL: ${DISK_AGENT_URL:-}
+      DISK_AGENT_URL: ${DISK_AGENT_URL:+http://disks:8091}
     volumes:
       - ${MEDIA_DIR}:/data:${MEDIA_PROPAGATION:-rw}
     restart: unless-stopped
@@ -61,6 +64,8 @@ services:
     privileged: true
     # um Systemplatten des Servers sicher zu erkennen
     pid: host
+    ports:
+      - "127.0.0.1:8091:8091"
     environment:
       DISK_AGENT_TOKEN: ${DISK_AGENT_TOKEN:-}
       DISK_TEST_LOOP_DIR: ${DISK_TEST_LOOP_DIR:-}
@@ -78,6 +83,8 @@ services:
   ai:
     image: ollama/ollama:0.6.8
     profiles: ["ai"]
+    ports:
+      - "127.0.0.1:11434:11434"
     environment:
       OLLAMA_KEEP_ALIVE: 10m
       OLLAMA_NUM_PARALLEL: "1"

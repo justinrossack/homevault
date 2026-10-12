@@ -152,6 +152,8 @@ const MIGRATIONS: &[&str] = &[
     -- Wer darf seinen Privat-Ordner selbst auf dieses NAS synchronisieren?
     -- 0 = niemand, 1 = alle Benutzer, 2 = nur die in sync_target_users
     ALTER TABLE backup_targets ADD COLUMN user_sync INTEGER NOT NULL DEFAULT 0;
+    -- Netzwerkadapter für Backup/Sync zu diesem NAS ('' = automatisch)
+    ALTER TABLE backup_targets ADD COLUMN iface TEXT NOT NULL DEFAULT '';
     CREATE TABLE sync_target_users (
         target_id INTEGER NOT NULL REFERENCES backup_targets(id) ON DELETE CASCADE,
         user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
