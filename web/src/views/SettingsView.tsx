@@ -22,6 +22,7 @@ import {
 import GroupRoundedIcon from '@mui/icons-material/GroupRounded'
 import LanRoundedIcon from '@mui/icons-material/LanRounded'
 import BackupRoundedIcon from '@mui/icons-material/BackupRounded'
+import SyncRoundedIcon from '@mui/icons-material/SyncRounded'
 import ShareRoundedIcon from '@mui/icons-material/ShareRounded'
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
 import SdStorageRoundedIcon from '@mui/icons-material/SdStorageRounded'
@@ -31,6 +32,7 @@ import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import LockRoundedIcon from '@mui/icons-material/LockRounded'
 import BackupSection from '../components/BackupSection'
+import SyncSection from '../components/SyncSection'
 import DisksPanel from '../components/DisksPanel'
 import { navigate } from '../router'
 import { copyText, expiryText, fullUrl } from '../components/ShareDialog'
@@ -73,7 +75,7 @@ export default function SettingsView({ tab }: { tab?: string }) {
       label: 'Allgemein',
       icon: <TuneRoundedIcon />,
       admin: true,
-      description: 'Name des Servers, Papierkorb und Videos',
+      description: 'Name des Servers, Papierkorb, Videos und Eingang',
       render: () => <ServerSection />,
     },
     {
@@ -116,6 +118,17 @@ export default function SettingsView({ tab }: { tab?: string }) {
       render: () => (
         <Panel>
           <BackupSection />
+        </Panel>
+      ),
+    },
+    {
+      id: 'sync',
+      label: 'Synchronisieren',
+      icon: <SyncRoundedIcon />,
+      description: 'Ordner laufend auf andere NAS im Haus spiegeln',
+      render: () => (
+        <Panel>
+          <SyncSection />
         </Panel>
       ),
     },
@@ -463,6 +476,25 @@ function ServerSection() {
           <Typography variant="body2" color="text.secondary" sx={{ ml: 6 }}>
             Ausgeschaltet wird ein Video erst umgewandelt, wenn es jemand in Chrome oder Firefox abspielen möchte. Das spart Rechenzeit und
             Platz, beim ersten Abspielen muss man aber warten.
+          </Typography>
+        </Box>
+        <Box>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={settings.inbox_enabled}
+                onChange={(e) =>
+                  save(
+                    { inbox_enabled: e.target.checked },
+                    e.target.checked ? 'Eingang wird automatisch sortiert' : 'Eingang wird nicht mehr sortiert',
+                  )
+                }
+              />
+            }
+            label="Eingangs-Ordner automatisch sortieren"
+          />
+          <Typography variant="body2" color="text.secondary" sx={{ ml: 6 }}>
+            Fotos und Dokumente im Ordner „Eingang“ (Gemeinsam und Privat) werden nach Datum bzw. per KI benannt in Ordner einsortiert.
           </Typography>
         </Box>
       </Stack>

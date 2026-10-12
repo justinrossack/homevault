@@ -13,6 +13,8 @@ WORKDIR /app
 # Abhängigkeiten separat bauen, damit Docker sie cachen kann
 COPY Cargo.toml Cargo.lock build.rs ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
+# Ortsliste für Foto-Ordner (wird ins Programm eingebettet)
+COPY data ./data
 COPY src ./src
 COPY --from=web /web/dist ./web/dist
 RUN touch src/main.rs && cargo build --release
@@ -31,7 +33,9 @@ FROM alpine:3.22
 # Vorschau für Word/Excel/PowerPoint per LibreOffice (+ ca. 450 MB).
 # Abschalten mit: docker compose build --build-arg OFFICE=false
 ARG OFFICE=true
+# tesseract: Texterkennung für gescannte Dokumente im Eingangs-Ordner
 RUN apk add --no-cache ffmpeg libheif-tools rclone tzdata poppler-utils tini \
+       tesseract-ocr tesseract-ocr-data-deu tesseract-ocr-data-eng \
     && if [ "$OFFICE" = "true" ]; then \
          apk add --no-cache libreoffice-writer libreoffice-calc libreoffice-impress font-liberation ttf-dejavu; \
        fi \

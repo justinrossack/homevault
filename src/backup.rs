@@ -49,11 +49,11 @@ pub(crate) const DB_DIR: &str = "Datenbank";
 #[derive(Clone)]
 pub(crate) struct Target {
     id: i64,
-    name: String,
-    host: String,
+    pub(crate) name: String,
+    pub(crate) host: String,
     port: i64,
-    share: String,
-    folder: String,
+    pub(crate) share: String,
+    pub(crate) folder: String,
     username: String,
     password: String,
     include_shared: bool,
@@ -65,10 +65,12 @@ pub(crate) struct Target {
     keep_days: i64,
     enabled: bool,
     created_at: i64,
+    /// Benutzer dürfen ihren Privat-Ordner hierher synchronisieren
+    pub(crate) user_sync: bool,
 }
 
 const TARGET_COLS: &str = "id, name, host, port, share, folder, username, password, include_shared, include_private, \
-                           include_db, schedule, time, weekday, keep_days, enabled, created_at";
+                           include_db, schedule, time, weekday, keep_days, enabled, created_at, user_sync";
 
 fn read_target(r: &rusqlite::Row) -> rusqlite::Result<Target> {
     Ok(Target {
@@ -89,6 +91,7 @@ fn read_target(r: &rusqlite::Row) -> rusqlite::Result<Target> {
         keep_days: r.get(14)?,
         enabled: r.get(15)?,
         created_at: r.get(16)?,
+        user_sync: r.get(17)?,
     })
 }
 
@@ -109,6 +112,11 @@ impl Target {
             }
         }
         p
+    }
+
+    /// rclone-Pfad relativ zur Freigabe (ohne den Backup-Ordner)
+    pub(crate) fn remote_in_share(&self, path: &str) -> String {
+        if path.is_empty() { format!(":smb:{}", self.share) } else { format!(":smb:{}/{path}", self.share) }
     }
 
     pub(crate) fn display(&self) -> String {
@@ -135,6 +143,7 @@ impl Target {
             "keep_days": self.keep_days,
             "enabled": self.enabled,
             "location": self.display(),
+            "user_sync": self.user_sync,
         })
     }
 
@@ -530,7 +539,7 @@ pub(crate) async fn rclone_output(args: &[&str], env: &[(String, String)]) -> Re
 }
 
 /// Typische SMB-Fehler verständlich machen.
-fn friendly_error(raw: &str) -> String {
+pub(crate) fn friendly_error(raw: &str) -> String {
     let lower = raw.to_lowercase();
     let hint = if lower.contains("logon failure") || lower.contains("access denied") || lower.contains("authentication") {
         "Benutzername oder Passwort falsch"
@@ -581,6 +590,8 @@ pub struct TargetBody {
     keep_days: i64,
     #[serde(default = "yes")]
     enabled: bool,
+    #[serde(default)]
+    user_sync: bool,
 }
 
 fn default_name() -> String {
@@ -620,6 +631,7 @@ impl TargetBody {
             keep_days: 0,
             enabled: true,
             created_at: 0,
+            user_sync: false,
         }
     }
 
@@ -657,7 +669,8 @@ impl TargetBody {
         if !(0..=6).contains(&self.weekday) || !(0..=3650).contains(&self.keep_days) {
             return bad("Ungültige Werte");
         }
-        if !(self.include_shared || self.include_private || self.include_db) {
+        // ohne Bereiche dient das Ziel nur als Verbindung für den Live-Sync
+        if self.schedule != "manual" && !(self.include_shared || self.include_private || self.include_db) {
             return bad("Bitte mindestens einen Bereich zum Sichern auswählen");
         }
         Ok(())
@@ -738,11 +751,11 @@ pub async fn create(
         .call(move |c| {
             c.execute(
                 "INSERT INTO backup_targets (name, host, port, share, folder, username, password, include_shared,
-                     include_private, include_db, schedule, time, weekday, keep_days, enabled, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     include_private, include_db, schedule, time, weekday, keep_days, enabled, created_at, user_sync)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     b.name, b.host, b.port, b.share, b.folder, b.username, password, b.include_shared, b.include_private,
-                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, db::now()
+                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, db::now(), b.user_sync
                 ],
             )?;
             Ok(c.last_insert_rowid())
@@ -768,11 +781,11 @@ pub async fn update(
             c.execute(
                 "UPDATE backup_targets SET name = ?, host = ?, port = ?, share = ?, folder = ?, username = ?, password = ?,
                      include_shared = ?, include_private = ?, include_db = ?, schedule = ?, time = ?, weekday = ?,
-                     keep_days = ?, enabled = ?
+                     keep_days = ?, enabled = ?, user_sync = ?
                  WHERE id = ?",
                 params![
                     b.name, b.host, b.port, b.share, b.folder, b.username, password, b.include_shared, b.include_private,
-                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, id
+                    b.include_db, b.schedule, b.time, b.weekday, b.keep_days, b.enabled, b.user_sync, id
                 ],
             )?;
             Ok(())
@@ -922,6 +935,7 @@ mod tests {
             keep_days: 30,
             enabled: true,
             created_at: 0,
+            user_sync: false,
         }
     }
 
@@ -972,6 +986,7 @@ mod tests {
             weekday: 6,
             keep_days: 30,
             enabled: true,
+            user_sync: false,
         };
         b.validate().unwrap();
         assert_eq!((b.name.as_str(), b.host.as_str(), b.share.as_str(), b.folder.as_str()), ("Papas NAS", "192.168.1.20", "backup", "homevault"));

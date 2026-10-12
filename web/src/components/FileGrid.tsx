@@ -7,6 +7,7 @@ import MovieOutlinedIcon from '@mui/icons-material/MovieOutlined'
 import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined'
 import PersonRoundedIcon from '@mui/icons-material/PersonRounded'
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded'
+import MoveToInboxRoundedIcon from '@mui/icons-material/MoveToInboxRounded'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
 import AdjustRoundedIcon from '@mui/icons-material/AdjustRounded'
 import FavoriteRoundedIcon from '@mui/icons-material/FavoriteRounded'
@@ -262,6 +263,8 @@ const Tile = memo(function Tile({ entry, onOpen, onMenu, onToggleSelect, isSelec
 function FallbackIcon({ entry, space }: { entry: Entry; space?: string }) {
   if (space === 'Privat') return <PersonRoundedIcon color="primary" sx={{ fontSize: 72 }} />
   if (space === 'Gemeinsam') return <GroupsRoundedIcon color="primary" sx={{ fontSize: 72 }} />
+  if (entry.kind === 'dir' && /^(Gemeinsam|Privat)\/Eingang$/.test(entry.path))
+    return <MoveToInboxRoundedIcon color="primary" sx={{ fontSize: 72 }} />
   if (entry.kind === 'dir') return <FolderRoundedIcon color="primary" sx={{ fontSize: 72 }} />
   return (
     <Box sx={{ '& svg': { fontSize: 64 } }}>

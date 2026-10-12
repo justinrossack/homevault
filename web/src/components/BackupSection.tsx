@@ -56,13 +56,18 @@ const EMPTY: BackupTargetInput = {
   weekday: 6,
   keep_days: 30,
   enabled: true,
+  user_sync: false,
 }
+
+/** Ohne Bereiche dient das Ziel nur als Verbindung für den Live-Sync */
+const hasAreas = (t: BackupTargetInput) => t.include_shared || t.include_private || t.include_db
 
 const dateTime = (t: number) =>
   new Date(t * 1000).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 
 function scheduleText(t: BackupTarget) {
   if (!t.enabled) return 'Pausiert'
+  if (!hasAreas(t)) return 'Nur für Live-Sync'
   if (t.schedule === 'manual') return 'Nur manuell'
   if (t.schedule === 'weekly') return `Jeden ${WEEKDAYS[t.weekday]} um ${t.time} Uhr`
   return `Täglich um ${t.time} Uhr`
@@ -175,7 +180,11 @@ export default function BackupSection() {
                   ) : (
                     <Tooltip title="Jetzt sichern">
                       <span>
-                        <IconButton color="primary" disabled={!!running} onClick={() => act(() => api.runBackup(t.id), 'Backup gestartet')}>
+                        <IconButton
+                          color="primary"
+                          disabled={!!running || !hasAreas(t)}
+                          onClick={() => act(() => api.runBackup(t.id), 'Backup gestartet')}
+                        >
                           <PlayArrowRoundedIcon />
                         </IconButton>
                       </span>
@@ -305,7 +314,10 @@ function TargetDialog({
 
   const set = <K extends keyof BackupTargetInput>(k: K, value: BackupTargetInput[K]) => setV((p) => ({ ...p, [k]: value }))
   const needsPassword = !state?.hasPassword
-  const complete = v.name.trim() && v.host.trim() && v.share.trim() && v.username.trim() && (!needsPassword || v.password)
+  const connection = v.name.trim() && v.host.trim() && v.share.trim() && v.username.trim() && (!needsPassword || v.password)
+  // ohne Bereiche nur mit Zeitplan „Nur manuell“ (reine Verbindung für den Live-Sync)
+  const areasOk = hasAreas(v) || v.schedule === 'manual'
+  const complete = connection && areasOk
 
   async function runTest() {
     setBusy('test')
@@ -410,7 +422,7 @@ function TargetDialog({
               <Button
                 variant="outlined"
                 startIcon={busy === 'test' ? <CircularProgress size={16} /> : <NetworkCheckRoundedIcon />}
-                disabled={!complete || busy !== null}
+                disabled={!connection || busy !== null}
                 onClick={runTest}
               >
                 Verbindung testen
@@ -439,6 +451,13 @@ function TargetDialog({
                 label="Datenbank (Benutzer, Alben, Favoriten)"
               />
             </FormGroup>
+            {!hasAreas(v) && (
+              <Alert severity={areasOk ? 'info' : 'warning'}>
+                {areasOk
+                  ? 'Es wird nichts gesichert – das NAS dient nur als Ziel für den Live-Sync.'
+                  : 'Bitte mindestens einen Bereich auswählen oder den Zeitplan „Nur manuell“ wählen, wenn das NAS nur für den Live-Sync dienen soll.'}
+              </Alert>
+            )}
 
             <Typography variant="subtitle2" sx={{ pt: 1 }}>
               Wann?
@@ -481,6 +500,19 @@ function TargetDialog({
               <MenuItem value={0}>Für immer</MenuItem>
             </TextField>
             <FormControlLabel control={<Switch checked={v.enabled} onChange={(e) => set('enabled', e.target.checked)} />} label="Aktiv" />
+
+            <Typography variant="subtitle2" sx={{ pt: 1 }}>
+              Live-Sync
+            </Typography>
+            <Box>
+              <FormControlLabel
+                control={<Switch checked={v.user_sync} onChange={(e) => set('user_sync', e.target.checked)} />}
+                label="Benutzer dürfen ihren Privat-Ordner auf dieses NAS synchronisieren"
+              />
+              <Typography variant="body2" color="text.secondary" sx={{ ml: 6 }}>
+                Jeder bekommt dort einen eigenen Ordner: {v.folder.trim() ? `${v.folder.trim()}/` : ''}Benutzer/&lt;Name&gt;
+              </Typography>
+            </Box>
           </Stack>
         </DialogContent>
         <DialogActions>

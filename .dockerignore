@@ -9,3 +9,4 @@ tests
 docs
 .github
 .git
+.debian-test

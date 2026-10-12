@@ -42,6 +42,9 @@ install_instance() { # Ordner, MEDIA_DIR, Webport, SMB-Port, Präfix, Platten?
     sed -i 's|^#COMPOSE_PROFILES=|COMPOSE_PROFILES=|; s|^#MEDIA_PROPAGATION=|MEDIA_PROPAGATION=|; s|^#DISK_AGENT_URL=|DISK_AGENT_URL=|' .env
     sed -i "s|^#DISK_AGENT_TOKEN=.*|DISK_AGENT_TOKEN=$(openssl rand -hex 24)|" .env
     echo "DISK_TEST_LOOP_DIR=/srv/disks" >> .env         # nur im Test: Loop-Geräte gelten als Platten
+    # README: KI für den Eingangs-Ordner (im Test das kleinste Modell)
+    sed -i 's|^COMPOSE_PROFILES=disks$|COMPOSE_PROFILES=disks,ai|; s|^#AI_URL=|AI_URL=|' .env
+    echo "AI_MODEL=qwen2.5:0.5b" >> .env
   fi
   # aus dem Quellcode bauen (statt fertige Images von GitHub zu laden)
   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build 2>&1 | tail -3

@@ -74,6 +74,8 @@ export interface BackupTargetInput {
   weekday: number
   keep_days: number
   enabled: boolean
+  /** Benutzer dürfen ihren Privat-Ordner hierher synchronisieren */
+  user_sync: boolean
 }
 
 export interface BackupTarget extends BackupTargetInput {
@@ -83,6 +85,57 @@ export interface BackupTarget extends BackupTargetInput {
   last_run?: BackupRun | null
   last_success?: number | null
   next_run?: number | null
+}
+
+export type SyncStatus = 'new' | 'pending' | 'running' | 'ok' | 'error' | 'paused'
+
+export interface SyncRule {
+  id: number
+  target_id: number
+  target_name: string
+  /** \\host\freigabe\ziel */
+  location: string
+  source_space: 'Gemeinsam' | 'Privat'
+  source_user: string | null
+  source_sub: string
+  /** z. B. „Gemeinsam/Fotos“ oder „Privat von anna/Fotos“ */
+  source_label: string
+  dest: string
+  by_admin: boolean
+  can_edit: boolean
+  keep_days: number
+  enabled: boolean
+  status: SyncStatus
+  pending_since: number | null
+  last_run_at: number | null
+  last_ok_at: number | null
+  last_error: string | null
+  /** übertragen im letzten Lauf */
+  files: number
+  bytes: number
+}
+
+/** NAS, das man als Sync-Ziel wählen darf */
+export interface SyncTarget {
+  id: number
+  name: string
+  location: string
+  folder: string
+  user_sync: boolean
+}
+
+export interface SyncRuleInput {
+  target_id: number
+  source: 'shared' | 'private'
+  /** nur Admin: wessen Privat-Ordner */
+  user?: string
+  /** Unterordner der Quelle, '' = alles */
+  sub?: string
+  /** nur Admin: Ordner in der Freigabe */
+  dest?: string
+  keep_days?: number
+  /** Zielordner ist nicht leer – trotzdem anlegen */
+  confirm_nonempty?: boolean
 }
 
 export interface BackupItem {
@@ -183,6 +236,33 @@ export interface Settings {
   server_name: string
   trash_days: number
   auto_transcode: boolean
+  inbox_enabled: boolean
+}
+
+export type InboxAiStatus =
+  { state: 'unknown' } | { state: 'unreachable'; error: string } | { state: 'pulling'; done: number; total: number } | { state: 'ready' }
+
+export interface InboxItem {
+  id: number
+  /** 'Gemeinsam' oder 'Privat/<benutzer>' */
+  area: string
+  original_name: string
+  /** Pfad wie in der Dateiansicht, nach „Rückgängig“ im Ordner Eingang/Zurückgelegt */
+  new_path: string | null
+  kind: 'photo' | 'document' | 'other'
+  status: 'done' | 'error' | 'undone' | 'skipped'
+  message: string | null
+  created_at: number
+}
+
+export interface InboxStatus {
+  enabled: boolean
+  /** null = keine KI eingerichtet, Dokumente bleiben liegen */
+  ai: { model: string; status: InboxAiStatus } | null
+  waiting: { name: string; area: string; document: boolean }[]
+  /** gerade bearbeitete Datei (Pfad auf dem Server, z. B. „Gemeinsam/Eingang/scan.pdf“) */
+  current: string | null
+  items: InboxItem[]
 }
 
 export interface TrashItem {
@@ -343,6 +423,17 @@ export const api = {
   setupRestore: (t: Partial<BackupTargetInput>) => request('POST', '/api/setup/restore', t),
   setupRestoreStatus: () =>
     request<{ running: BackupProgress | null; result: RestoreResult | null; done?: boolean }>('GET', '/api/setup/restore'),
+
+  // Live-Sync
+  sync: () => request<{ rules: SyncRule[]; targets: SyncTarget[]; users: string[] }>('GET', '/api/sync'),
+  createSync: (body: SyncRuleInput) => request<{ id: number }>('POST', '/api/sync', body),
+  updateSync: (id: number, patch: { enabled?: boolean; keep_days?: number }) => request('PATCH', `/api/sync/${id}`, patch),
+  deleteSync: (id: number) => request('DELETE', `/api/sync/${id}`),
+  runSync: (id: number) => request('POST', `/api/sync/${id}/run`),
+
+  // Eingang
+  inbox: () => request<InboxStatus>('GET', '/api/inbox'),
+  inboxUndo: (id: number) => request<{ ok: boolean }>('POST', `/api/inbox/${id}/undo`),
 
   // Dateien
   list: (path: string) => request<{ path: string; entries: Entry[] }>('GET', `/api/list?${q(path)}`),

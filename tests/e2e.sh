@@ -234,6 +234,69 @@ else
   nok L0 "Backup" "kein Backup-Ziel (NAS2_HOST) angegeben"
 fi
 
+section "S Live-Sync zu anderen NAS"
+if [ -n "$NAS2_HOST" ]; then
+  N2=/srv/nas2/Gemeinsam
+  post "$ADM" /api/folder '{"path":"Gemeinsam/Familie"}' >/dev/null
+  upload "$ADM" "$A/foto.jpg" Gemeinsam/Familie >/dev/null
+  # zweites Ziel auf demselben NAS, nur als Verbindung, Benutzer dürfen hierher
+  KID=$(post "$ADM" /api/backups "{\"name\":\"Keller-NAS\",\"host\":\"$NAS2_HOST\",\"port\":$NAS2_PORT,\"share\":\"Gemeinsam\",\"folder\":\"keller\",\"username\":\"papa\",\"password\":\"papa1234\",\"include_shared\":false,\"include_private\":false,\"include_db\":false,\"user_sync\":true}" | jq .id)
+  t S1 "Regel anlegen: Gemeinsam/Familie → Papas NAS" jqt "$(post "$ADM" /api/sync "{\"target_id\":$BID,\"source\":\"shared\",\"sub\":\"Familie\",\"dest\":\"sync/familie\"}")" '.id > 0'
+  t S2 "Erster Abgleich überträgt vorhandene Dateien" until_ok 30 test -f $N2/sync/familie/foto.jpg
+  t S3 "Zweite Regel in denselben Ordner wird abgelehnt" has "$(post "$ADM" /api/sync "{\"target_id\":$KID,\"source\":\"shared\",\"dest\":\"sync/familie/2024\"}")" "andere Regel"
+  t S4 "Regel in einen Backup-Ordner wird abgelehnt" has "$(post "$ADM" /api/sync "{\"target_id\":$BID,\"source\":\"shared\",\"dest\":\"backup/Gemeinsam\"}")" "Backup"
+  upload "$ADM" "$A/notizen.md" Gemeinsam/Familie >/dev/null
+  echo "per Netzlaufwerk" > $T/smb2.txt
+  smb Gemeinsam admin%admin1234 "put $T/smb2.txt Familie/von-smb.txt" >/dev/null
+  t S5 "Neue Dateien (Browser und Netzlaufwerk) kommen von selbst an" until_ok 75 bash -c "test -f $N2/sync/familie/notizen.md && test -f $N2/sync/familie/von-smb.txt"
+  curl -s -b $ADM -X DELETE "$B/api/file?path=Gemeinsam/Familie/notizen.md" >/dev/null
+  t S6 "Gelöschtes verschwindet auf dem NAS, alte Version bleibt" until_ok 75 bash -c "! test -e $N2/sync/familie/notizen.md && ls $N2/sync/familie/.versionen/*/notizen.md"
+  t S7 "Status der Regel: aktuell, ohne Fehler" jqt "$(get "$ADM" /api/sync)" '.rules[] | select(.dest == "sync/familie") | .status == "ok" and .last_error == null'
+  t S8 "Benutzer darf nur freigegebene NAS wählen" is "$(code -b $USR -H "$J" -d "{\"target_id\":$BID,\"source\":\"private\"}" $B/api/sync)" 403
+  upload "$USR" "$A/notizen.md" Privat sync-test.md >/dev/null
+  t S9 "Benutzer synchronisiert seinen Privat-Ordner" jqt "$(post "$USR" /api/sync "{\"target_id\":$KID,\"source\":\"private\"}")" '.id > 0'
+  t S10 "…in seinen eigenen Ordner auf dem NAS" until_ok 30 test -f $N2/keller/Benutzer/lisa/sync-test.md
+  t S11 "Benutzer sieht nur seine eigenen Regeln" jqt "$(get "$USR" /api/sync)" '(.rules | length) == 1 and .rules[0].can_edit == true and (.users | length) == 0 and (.targets | length) == 1'
+  t S12 "Admin sieht alle Regeln" jqt "$(get "$ADM" /api/sync)" '(.rules | length) == 2'
+  mkdir -p $N2/vorhanden && echo alt > $N2/vorhanden/alt.txt
+  t S13 "Zielordner mit fremden Dateien: erst nachfragen" has "$(post "$ADM" /api/sync "{\"target_id\":$BID,\"source\":\"shared\",\"sub\":\"Familie\",\"dest\":\"vorhanden\"}")" "DEST_NOT_EMPTY"
+  t S14 "Fremde Dateien bleiben unangetastet" test -f $N2/vorhanden/alt.txt
+  SID=$(get "$ADM" /api/sync | jq '.rules[] | select(.dest == "sync/familie") | .id')
+  curl -s -b $ADM -X PATCH -H "$J" -d '{"enabled":false}' $B/api/sync/$SID >/dev/null
+  upload "$ADM" "$A/vertrag.pdf" Gemeinsam/Familie >/dev/null
+  t S15 "Pausierte Regel überträgt nichts" bash -c "sleep 70; ! test -e $N2/sync/familie/vertrag.pdf && curl -s -b $ADM $B/api/sync | jq -e '.rules[] | select(.id == $SID) | .status == \"paused\"' >/dev/null"
+fi
+
+section "W Eingang: automatisch einsortieren"
+t W1 "Eingangs-Ordner werden angelegt (Gemeinsam und pro Benutzer)" until_ok 30 bash -c "test -d $MEDIA/Gemeinsam/Eingang && test -d $MEDIA/Privat/lisa/Eingang"
+upload "$ADM" "$A/foto.jpg" Gemeinsam/Eingang >/dev/null
+upload "$ADM" "$A/IMG_0001.HEIC" Gemeinsam/Eingang >/dev/null
+upload "$ADM" "$A/IMG_0001.MOV" Gemeinsam/Eingang >/dev/null
+upload "$USR" "$A/iphone-video.mov" Privat/Eingang >/dev/null
+# Video mit GPS (Lissabon), über das Netzlaufwerk abgelegt wie von einem Handy
+ffmpeg -v error -y -f lavfi -i testsrc=duration=1:size=320x240:rate=10 -metadata location="+38.7223-009.1393/" \
+  -metadata creation_time="2025-08-03T10:00:00Z" -c:v libx264 -pix_fmt yuv420p $T/urlaub.mp4
+smb Gemeinsam admin%admin1234 "put $T/urlaub.mp4 Eingang/urlaub.mp4" >/dev/null
+t W2 "Foto landet nach Aufnahmedatum in Fotos/2024/2024-07" until_ok 45 test -f $MEDIA/Gemeinsam/Fotos/2024/2024-07/foto.jpg
+t W3 "Video mit GPS: Ordner mit Ortsname (offline erkannt)" until_ok 30 test -f "$MEDIA/Gemeinsam/Fotos/2025/2025-08 Lissabon/urlaub.mp4"
+t W4 "Live Photo: Foto und Video ziehen zusammen um" until_ok 30 bash -c "f=\$(find $MEDIA/Gemeinsam/Fotos -name IMG_0001.HEIC); test -n \"\$f\" && test -f \"\${f%.HEIC}.MOV\""
+t W5 "Privater Eingang sortiert in den eigenen Privat-Ordner" until_ok 30 test -f $MEDIA/Privat/lisa/Fotos/2024/2024-06/iphone-video.mov
+t W6 "Eingang ist danach leer" bash -c "test -z \"\$(find $MEDIA/Gemeinsam/Eingang -maxdepth 1 -type f)\""
+IB=$(get "$ADM" /api/inbox)
+t W7 "Verlauf zeigt, was wohin kam" jqt "$IB" '[.items[] | select(.original_name == "foto.jpg" and .status == "done" and .new_path == "Gemeinsam/Fotos/2024/2024-07/foto.jpg")] | length == 1'
+t W8 "Fremder privater Verlauf bleibt unsichtbar" jqt "$(get "$USR" /api/inbox)" 'all(.items[]; .area == "Gemeinsam" or .area == "Privat/lisa") and any(.items[]; .area == "Privat/lisa")'
+WID=$(echo "$IB" | jq '[.items[] | select(.original_name == "foto.jpg")][0].id')
+t W9 "Rückgängig: Datei zurück nach Eingang/Zurückgelegt" bash -c "curl -s -b $ADM -X POST $B/api/inbox/$WID/undo | grep -q ok && test -f $MEDIA/Gemeinsam/Eingang/Zurückgelegt/foto.jpg && ! test -e $MEDIA/Gemeinsam/Fotos/2024/2024-07/foto.jpg"
+t W10 "Zurückgelegtes wird nicht erneut sortiert" bash -c "sleep 35; test -f $MEDIA/Gemeinsam/Eingang/Zurückgelegt/foto.jpg"
+t W11 "Texterkennung (OCR) für Scans im Image vorhanden" bash -c "docker exec -i ${CONTAINER_PREFIX:-homevault} sh -c 'cat > /tmp/v.pdf && pdftoppm -r 150 -l 1 -png /tmp/v.pdf /tmp/s && tesseract /tmp/s-1.png stdout -l deu 2>/dev/null' < $A/vertrag.pdf | grep -qi vertrag"
+if [ "$(get "$ADM" /api/inbox | jq '.ai != null')" = true ]; then
+  t W12 "KI-Modell wird geladen und ist bereit" until_ok 150 bash -c "curl -s -b $ADM $B/api/inbox | jq -e '.ai.status.state == \"ready\"'"
+  printf 'Stadtwerke München GmbH\nRechnung Nr. 2026-031-88412   München, 12.03.2026\nIhre Stromrechnung für Februar 2026\nVerbrauch 312 kWh, Gesamtbetrag 116,09 EUR\n' > $T/scan_0042.txt
+  upload "$ADM" "$T/scan_0042.txt" Gemeinsam/Eingang >/dev/null
+  t W13 "Dokument wird von der KI benannt und in Dokumente/ einsortiert" until_ok 120 bash -c "find $MEDIA/Gemeinsam/Dokumente -mindepth 2 -name '*.txt' | grep -q . && ! test -e $MEDIA/Gemeinsam/Eingang/scan_0042.txt"
+  t W14 "Neuer Name statt scan_0042" bash -c "! find $MEDIA/Gemeinsam/Dokumente -name 'scan_0042.txt' | grep -q ."
+fi
+
 section "M Speicher & System"
 ST=$(get "$ADM" /api/storage)
 t M1 "Speicher-Übersicht mit Plattengröße" jqt "$ST" '.disk.total > 0 and .disk.free > 0'

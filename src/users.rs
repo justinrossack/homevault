@@ -308,6 +308,8 @@ pub struct SettingsBody {
     server_name: Option<String>,
     trash_days: Option<i64>,
     auto_transcode: Option<bool>,
+    /// Eingangs-Ordner automatisch einsortieren
+    inbox_enabled: Option<bool>,
 }
 
 /// Einstellungen für die Einstellungsseite (Admin).
@@ -316,17 +318,18 @@ pub async fn get_settings(
     Extension(me): Extension<CurrentUser>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&me)?;
-    let (name, days, auto) = state
+    let (name, days, auto, inbox) = state
         .db
         .call(|c| {
             Ok((
                 db::get_setting(c, "server_name")?.unwrap_or_else(|| DEFAULT_SERVER_NAME.into()),
                 crate::trash::trash_days(c),
                 db::get_setting(c, "auto_transcode")?.as_deref() != Some("0"),
+                crate::inbox::enabled(c),
             ))
         })
         .await?;
-    Ok(Json(json!({ "server_name": name, "trash_days": days, "auto_transcode": auto })))
+    Ok(Json(json!({ "server_name": name, "trash_days": days, "auto_transcode": auto, "inbox_enabled": inbox })))
 }
 
 pub async fn update_settings(
@@ -353,9 +356,13 @@ pub async fn update_settings(
             if let Some(auto) = b.auto_transcode {
                 db::set_setting(conn, "auto_transcode", if auto { "1" } else { "0" })?;
             }
+            if let Some(on) = b.inbox_enabled {
+                db::set_setting(conn, "inbox_enabled", if on { "1" } else { "0" })?;
+            }
             Ok(())
         })
         .await?;
+    state.inbox.wake();
     Ok(Json(json!({ "ok": true })))
 }
 

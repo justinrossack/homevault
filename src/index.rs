@@ -519,7 +519,7 @@ pub struct Meta {
     pub hdr: bool,
 }
 
-fn read_meta(path: &Path, kind: &str) -> Meta {
+pub fn read_meta(path: &Path, kind: &str) -> Meta {
     if kind == "video" {
         probe_video(path)
     } else {

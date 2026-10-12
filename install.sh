@@ -118,6 +118,15 @@ if [ "$(ask 'Festplatten-Verwaltung (Spiegel/RAID, Hot-Swap) einschalten? (j/n)'
   mount --make-rshared / 2>/dev/null || true
 fi
 
+if [ "$(ask 'Lokale KI für den Eingangs-Ordner einschalten (Dokumente benennen/sortieren, braucht ca. 4 GB RAM)? (j/n)' n)" = j ]; then
+  if grep -q '^COMPOSE_PROFILES=' "$ENV_NEW"; then
+    sed -i 's|^COMPOSE_PROFILES=\(.*\)|COMPOSE_PROFILES=\1,ai|' "$ENV_NEW"
+  else
+    echo "COMPOSE_PROFILES=ai" >> "$ENV_NEW"
+  fi
+  sed -i 's|^#AI_URL=|AI_URL=|' "$ENV_NEW"
+fi
+
 say "Images laden"
 # mit der neuen Konfiguration laden, bevor sie gilt
 docker compose --env-file "$ENV_NEW" pull

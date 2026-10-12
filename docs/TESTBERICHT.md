@@ -1,11 +1,11 @@
 # Testbericht homevault
 
-**Ergebnis: 133 von 133 Tests bestanden.**  
+**Ergebnis: 162 von 162 Tests bestanden.**  
 Getestet am 11. Oktober 2026 auf einem frisch installierten Debian 13, Installation genau nach README.
 
 ## Fazit
 
-**homevault ist für den Einsatz zu Hause benutzbar.** Alle Funktionen haben im Ende-zu-Ende-Test auf einem frischen Debian-Server funktioniert: Installation, Einrichtung, Benutzer, Dateien, Fotos und Videos (inkl. iPhone-Formate), Zeitleiste, Alben, Papierkorb, Teilen-Links, Dokument-Vorschau, Netzlaufwerk, Backup mit Wiederherstellung, Festplatten-Spiegel mit Ausfall und Tausch.
+**homevault ist für den Einsatz zu Hause benutzbar.** Alle Funktionen haben im Ende-zu-Ende-Test auf einem frischen Debian-Server funktioniert: Installation, Einrichtung, Benutzer, Dateien, Fotos und Videos (inkl. iPhone-Formate), Zeitleiste, Alben, Papierkorb, Teilen-Links, Dokument-Vorschau, Netzlaufwerk, Backup mit Wiederherstellung, Live-Sync auf andere NAS, Eingangs-Ordner mit lokaler KI, Festplatten-Spiegel mit Ausfall und Tausch.
 
 Empfehlung für den Start:
 1. Festplatten-Spiegel **und** Backup auf ein zweites Gerät einrichten. Der Spiegel schützt vor einem Plattendefekt, das Backup vor Löschen, Erpressungstrojanern und Totalverlust.
@@ -21,7 +21,7 @@ Die Punkte unter „Nicht getestet“ sollten beim ersten Einsatz auf echter Har
 | Betriebssystem | Debian 13.7 „trixie“ (Container mit eigenem Docker-Dienst, wie ein eigener Server) |
 | Docker | 26.1.5 und Docker Compose 2.26.1 aus den Debian-Paketquellen |
 | Festplatten | 3 × 2 GB (Loop-Geräte), Systemplatte zum Gegenprüfen |
-| Instanzen | homevault mit Festplatten-Verwaltung, zweiter homevault als Backup-Ziel, dritter leerer Server für die Wiederherstellung |
+| Instanzen | homevault mit Festplatten-Verwaltung und KI (Ollama), zweiter homevault als Backup- und Sync-Ziel, dritter leerer Server für die Wiederherstellung |
 | Clients | `curl` (wie der Browser), `smbclient` (wie Windows/macOS), `ffprobe`, `sqlite3` |
 | Image-Größen | Web-App 1,19 GB (davon ca. 1 GB LibreOffice für die Office-Vorschau), Platten-Dienst 38 MB, Samba 73 MB |
 
@@ -29,7 +29,7 @@ Die Punkte unter „Nicht getestet“ sollten beim ersten Einsatz auf echter Har
 
 1. `tests/debian-server.sh` installiert Docker aus den Debian-Quellen, legt Datenordner und drei Test-Platten an und installiert homevault nach README (`.env` aus der Vorlage) und baut die Images dabei aus dem aktuellen Quellcode (`docker-compose.build.yml`), damit genau dieser Stand getestet wird.
 2. `tests/e2e.sh` prüft jede Funktion über dieselben Schnittstellen, die Weboberfläche und Netzlaufwerk benutzen, und vergleicht Dateien bytegenau.
-3. Zusätzlich: 23 Unit-Tests (`cargo test`), TypeScript-Prüfung und Bedienung im Browser (Einrichtungsassistent, Rahmenauswahl, Vorschauen, Einstellungen, Festplatten-Seite, Vollbildansicht mit Tastatur, Benutzer anlegen).
+3. Zusätzlich: 32 Unit-Tests (`cargo test`), TypeScript-Prüfung und Bedienung im Browser (Einrichtungsassistent, Rahmenauswahl, Vorschauen, Einstellungen, Festplatten-Seite, Vollbildansicht mit Tastatur, Benutzer anlegen).
 
 ## Ergebnisse
 
@@ -295,6 +295,51 @@ Server aus, alle Platten des Spiegels entfernt, Server an. homevault darf dann n
 | N26 | Schreiben wieder möglich | ✅ bestanden |
 | N27 | Netzlaufwerk wieder erreichbar | ✅ bestanden |
 
+### S Live-Sync zu anderen NAS
+
+Regeln „Quelle → Ziel“ gegen den zweiten homevault als NAS (SMB). Änderungen aus Browser und Netzlaufwerk, Löschen mit Versionen, Benutzerrechte, Schutz vor Überschneidungen.
+
+
+| Nr. | Test | Ergebnis |
+|---|---|---|
+| S1 | Regel anlegen: Gemeinsam/Familie → Papas NAS | ✅ bestanden |
+| S2 | Erster Abgleich überträgt vorhandene Dateien | ✅ bestanden |
+| S3 | Zweite Regel in denselben Ordner wird abgelehnt | ✅ bestanden |
+| S4 | Regel in einen Backup-Ordner wird abgelehnt | ✅ bestanden |
+| S5 | Neue Dateien (Browser und Netzlaufwerk) kommen von selbst an | ✅ bestanden |
+| S6 | Gelöschtes verschwindet auf dem NAS, alte Version bleibt | ✅ bestanden |
+| S7 | Status der Regel: aktuell, ohne Fehler | ✅ bestanden |
+| S8 | Benutzer darf nur freigegebene NAS wählen | ✅ bestanden |
+| S9 | Benutzer synchronisiert seinen Privat-Ordner | ✅ bestanden |
+| S10 | …in seinen eigenen Ordner auf dem NAS | ✅ bestanden |
+| S11 | Benutzer sieht nur seine eigenen Regeln | ✅ bestanden |
+| S12 | Admin sieht alle Regeln | ✅ bestanden |
+| S13 | Zielordner mit fremden Dateien: erst nachfragen | ✅ bestanden |
+| S14 | Fremde Dateien bleiben unangetastet | ✅ bestanden |
+| S15 | Pausierte Regel überträgt nichts | ✅ bestanden |
+
+### W Eingang: automatisch einsortieren
+
+Fotos (Datum, Ort per GPS, Live Photos) ohne KI, Dokumente mit lokaler KI (Ollama, im Test das kleinste Modell `qwen2.5:0.5b`), Verlauf und Rückgängig.
+
+
+| Nr. | Test | Ergebnis |
+|---|---|---|
+| W1 | Eingangs-Ordner werden angelegt (Gemeinsam und pro Benutzer) | ✅ bestanden |
+| W2 | Foto landet nach Aufnahmedatum in Fotos/2024/2024-07 | ✅ bestanden |
+| W3 | Video mit GPS: Ordner mit Ortsname (offline erkannt) | ✅ bestanden |
+| W4 | Live Photo: Foto und Video ziehen zusammen um | ✅ bestanden |
+| W5 | Privater Eingang sortiert in den eigenen Privat-Ordner | ✅ bestanden |
+| W6 | Eingang ist danach leer | ✅ bestanden |
+| W7 | Verlauf zeigt, was wohin kam | ✅ bestanden |
+| W8 | Fremder privater Verlauf bleibt unsichtbar | ✅ bestanden |
+| W9 | Rückgängig: Datei zurück nach Eingang/Zurückgelegt | ✅ bestanden |
+| W10 | Zurückgelegtes wird nicht erneut sortiert | ✅ bestanden |
+| W11 | Texterkennung (OCR) für Scans im Image vorhanden | ✅ bestanden |
+| W12 | KI-Modell wird geladen und ist bereit | ✅ bestanden |
+| W13 | Dokument wird von der KI benannt und in Dokumente/ einsortiert | ✅ bestanden |
+| W14 | Neuer Name statt scan_0042 | ✅ bestanden |
+
 ## Gefundene und behobene Fehler
 
 Der erste Durchlauf ergab 118 von 124. Die Abweichungen:
@@ -346,6 +391,17 @@ Nach dem ersten grünen Durchlauf wurde der gesamte Code noch einmal gezielt auf
 - `ADMIN_USER`/`ADMIN_PASSWORD` und `INDEX_INTERVAL_MINUTES` aus der README werden jetzt auch wirklich an den Container übergeben.
 - Der Platzhalter-Token aus der Vorlage wird abgelehnt.
 
+## Qualität der KI (Eingang)
+
+Lokal mit dem Standardmodell `qwen2.5:3b` geprüft (im Debian-Test nur das kleine Modell, weil es um den Ablauf geht):
+
+| Datei | einsortiert als |
+|---|---|
+| `Dokument1.docx` (Steuerbescheid) | `Steuer/2026-02-04 Finanzamt Einkommensteuer und Solidaritätszuschlag 2024.docx` |
+| `scan_0042.txt` (Stromrechnung) | `Rechnungen/2026-03-12 Stadtwerke München GmbH Stromrechnung Februar.txt` |
+| `vertrag.pdf` | `Verträge/Vertrag Test.pdf` |
+| `notiz.txt` (ein Wort) | `Unsortiert/notiz.txt` (zu wenig Text, kein Raten) |
+
 ## Nicht getestet (Grenzen dieses Tests)
 
 | Bereich | Warum nicht | Risiko / Empfehlung |
@@ -356,6 +412,8 @@ Nach dem ersten grünen Durchlauf wurde der gesamte Code noch einmal gezielt auf
 | Browser auf iPhone/Android | Oberfläche im Desktop-Browser und in Handy-Größe geprüft, nicht auf echten Geräten. | Gering bis mittel (Long-Press, PDF-Ansicht auf iOS). |
 | Große Bibliotheken (z. B. 50.000 Fotos, mehrere TB) | Testdaten nur wenige MB. | Erster Index-Durchlauf, Video-Umwandlung und Spiegel-Anlage dauern dann deutlich länger. Spiegel am besten anlegen, bevor viele Daten da sind. |
 | Zeitgesteuerte Abläufe (Backup um 3 Uhr, monatliche Datenprüfung, Papierkorb nach 30 Tagen) | Zeitplan-Logik per Unit-Test geprüft, nicht über echte Tage. | Nach der ersten Nacht den Backup-Verlauf ansehen. |
+| KI-Geschwindigkeit auf dem echten Server | Getestet auf schnellerer Hardware. | Auf einem älteren Core i3 ca. 30–90 s pro Dokument; läuft im Hintergrund. |
+| Scanner, die per SMB in den Eingang speichern | Mit `smbclient` nachgestellt. | Gering; Scanner auf SMB2/3 und PDF stellen. |
 | Stromausfall während Spiegel-Anlage oder Plattentausch | Nicht simuliert. | Diese Vorgänge nur mit stabiler Stromversorgung starten (USV empfohlen). |
 | ARM64 (z. B. Raspberry Pi), `install.sh` komplett, GitHub-Actions | Brauchen die veröffentlichten Images auf GitHub. | Nach dem ersten erfolgreichen Workflow-Lauf `install.sh` auf einem frischen Server ausführen. |
 

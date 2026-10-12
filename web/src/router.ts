@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 /**
  * Minimaler Hash-Router, damit Zurück-Button und Lesezeichen funktionieren:
- *   #/files/<pfad>  #/timeline  #/favorites  #/albums  #/albums/<id>  #/trash  #/settings
+ *   #/files/<pfad>  #/timeline  #/favorites  #/albums  #/albums/<id>  #/inbox  #/trash  #/settings
  */
 export type Route =
   | { view: 'files'; path: string }
@@ -12,6 +12,7 @@ export type Route =
   | { view: 'album'; id: number }
   | { view: 'settings'; tab?: string }
   | { view: 'trash' }
+  | { view: 'inbox' }
 
 /** Kaputte Prozent-Kodierung (z. B. „%E0%A4%A“) nicht abstürzen lassen */
 function safeDecode(s: string) {
@@ -34,6 +35,8 @@ export function parseHash(hash: string): Route {
       return { view: 'settings', tab: rest[0] || undefined }
     case 'trash':
       return { view: 'trash' }
+    case 'inbox':
+      return { view: 'inbox' }
     case 'albums': {
       const id = Number(rest[0])
       return rest[0] && Number.isFinite(id) ? { view: 'album', id } : { view: 'albums' }

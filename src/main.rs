@@ -6,6 +6,8 @@ mod disks;
 mod docs;
 mod error;
 mod fs_api;
+mod geo;
+mod inbox;
 mod index;
 mod library;
 mod media;
@@ -14,10 +16,12 @@ mod restore;
 mod share;
 mod static_files;
 mod storage;
+mod sync;
 mod trash;
 mod upload;
 mod users;
 mod video;
+mod watch;
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
@@ -41,6 +45,8 @@ pub struct AppState {
     pub db: Arc<db::Db>,
     pub index: Arc<index::Index>,
     pub backups: Arc<backup::Backups>,
+    pub sync: Arc<sync::Syncer>,
+    pub inbox: Arc<inbox::Inbox>,
     pub transcoder: Arc<video::Transcoder>,
     /// Platten-Dienst (nur wenn DISK_AGENT_URL gesetzt ist)
     pub disks: Option<Arc<disks::DiskClient>>,
@@ -157,6 +163,11 @@ async fn main() {
 
     let backups = backup::Backups::new(db.clone(), data_dir.clone(), &cache_dir);
     backups.start_scheduler();
+    // fehlt der Speicherverbund, liegt unter /data nur der alte Ordner
+    let maintenance = Arc::new(std::sync::atomic::AtomicBool::new(pool_missing));
+    let watcher = watch::Watcher::start(data_dir.clone());
+    let syncer = sync::Syncer::start(db.clone(), data_dir.clone(), maintenance.clone(), &watcher);
+    let inbox = inbox::Inbox::new(db.clone(), data_dir.clone(), maintenance.clone());
 
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get());
     let state = AppState {
@@ -168,10 +179,12 @@ async fn main() {
         backups,
         transcoder,
         disks: disk_client.clone(),
-        // fehlt der Speicherverbund, liegt unter /data nur der alte Ordner
-        maintenance: Arc::new(std::sync::atomic::AtomicBool::new(pool_missing)),
+        sync: syncer,
+        inbox: inbox.clone(),
+        maintenance,
         thumb_limit: Arc::new(Semaphore::new(workers)),
     };
+    inbox.start(state.clone(), &watcher);
 
     let protected = Router::new()
         .route("/api/list", get(fs_api::list))
@@ -213,6 +226,11 @@ async fn main() {
         .route("/api/albums/{id}/remove", post(library::remove_items))
         .route("/api/index", get(library::index_status))
         .route("/api/index/rescan", post(library::rescan))
+        .route("/api/inbox", get(inbox::status))
+        .route("/api/inbox/{id}/undo", post(inbox::undo))
+        .route("/api/sync", get(sync::list).post(sync::create))
+        .route("/api/sync/{id}", patch(sync::update).delete(sync::delete))
+        .route("/api/sync/{id}/run", post(sync::run_now))
         .route("/api/backups", get(backup::list).post(backup::create))
         .route("/api/backups/test", post(backup::test))
         .route("/api/backups/cancel", post(backup::cancel))

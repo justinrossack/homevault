@@ -19,6 +19,9 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       DISK_AGENT_URL: ${DISK_AGENT_URL:-}
       DISK_AGENT_TOKEN: ${DISK_AGENT_TOKEN:-}
+      # optional: lokale KI für den Eingangs-Ordner (Dokumente benennen/sortieren)
+      AI_URL: ${AI_URL:-}
+      AI_MODEL: ${AI_MODEL:-qwen2.5:3b}
     volumes:
       # rslave: sieht den Speicherverbund, sobald der Platten-Dienst ihn einhängt
       - ${MEDIA_DIR:?MEDIA_DIR in .env setzen}:/data:${MEDIA_PROPAGATION:-rw}
@@ -69,6 +72,23 @@ services:
       - disks-state:/state
     restart: unless-stopped
 
+  # Optional: lokale KI (Ollama) für den Eingangs-Ordner. Läuft komplett im
+  # Haus, braucht ca. 3 GB RAM und 2 GB Platz für das Modell.
+  # Einschalten mit COMPOSE_PROFILES=ai (bzw. disks,ai) und AI_URL in der .env.
+  ai:
+    image: ollama/ollama:0.6.8
+    profiles: ["ai"]
+    environment:
+      OLLAMA_KEEP_ALIVE: 10m
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    volumes:
+      - ai-models:/root/.ollama
+    # Ollama rechnet nur auf den echten Kernen (ohne Hyperthreading), so
+    # bleibt für Uploads und Videos Luft
+    restart: unless-stopped
+
 volumes:
   cache:
   disks-state:
+  ai-models:

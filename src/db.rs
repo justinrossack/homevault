@@ -147,6 +147,43 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX shares_owner ON shares(owner_id);
     "#,
+    // 4: Live-Sync zu anderen NAS, Eingangs-Ordner (automatisch einsortieren)
+    r#"
+    -- Benutzer dürfen ihren Privat-Ordner auf dieses NAS synchronisieren
+    ALTER TABLE backup_targets ADD COLUMN user_sync INTEGER NOT NULL DEFAULT 0;
+
+    CREATE TABLE sync_rules (
+        id             INTEGER PRIMARY KEY,
+        target_id      INTEGER NOT NULL REFERENCES backup_targets(id) ON DELETE CASCADE,
+        source_space   TEXT NOT NULL,             -- Gemeinsam | Privat
+        source_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, -- bei Privat
+        source_sub     TEXT NOT NULL DEFAULT '',  -- Unterordner, leer = alles
+        dest           TEXT NOT NULL,             -- Ordner in der Freigabe des NAS
+        created_by     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        by_admin       INTEGER NOT NULL,          -- vom Admin angelegt (Benutzer kann sie nicht ändern)
+        keep_days      INTEGER NOT NULL DEFAULT 30,
+        enabled        INTEGER NOT NULL DEFAULT 1,
+        last_run_at    INTEGER,
+        last_ok_at     INTEGER,
+        last_error     TEXT,
+        files          INTEGER NOT NULL DEFAULT 0, -- beim letzten Lauf übertragen
+        bytes          INTEGER NOT NULL DEFAULT 0,
+        created_at     INTEGER NOT NULL
+    );
+
+    CREATE TABLE inbox_log (
+        id            INTEGER PRIMARY KEY,
+        area          TEXT NOT NULL,              -- Gemeinsam | Privat/<name>
+        original_name TEXT NOT NULL,
+        new_path      TEXT,                       -- relativ zu DATA_DIR
+        live_path     TEXT,                       -- mitverschobenes Live-Video
+        kind          TEXT NOT NULL,              -- photo | document
+        status        TEXT NOT NULL,              -- done | error | undone
+        message       TEXT,
+        created_at    INTEGER NOT NULL
+    );
+    CREATE INDEX inbox_log_area ON inbox_log(area, created_at DESC);
+    "#,
 ];
 
 pub fn now() -> i64 {

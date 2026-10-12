@@ -40,6 +40,7 @@ import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded'
 import KeyRoundedIcon from '@mui/icons-material/KeyRounded'
 import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
+import MoveToInboxRoundedIcon from '@mui/icons-material/MoveToInboxRounded'
 import { api, formatSize, type Entry, type Storage, type User } from '../api'
 import { hrefFor, navigate, useRoute, type Route } from '../router'
 import { ShellContext, type ShellApi } from '../shell'
@@ -55,10 +56,11 @@ import FavoritesView from '../views/FavoritesView'
 import AlbumsView from '../views/AlbumsView'
 import AlbumView from '../views/AlbumView'
 import SettingsView from '../views/SettingsView'
+import InboxView from '../views/InboxView'
 
 const DRAWER = 232
 
-type Section = 'files' | 'timeline' | 'favorites' | 'albums' | 'trash' | 'settings'
+type Section = 'files' | 'inbox' | 'timeline' | 'favorites' | 'albums' | 'trash' | 'settings'
 
 const NAV: { section: Section; label: string; icon: ReactNode; route: Route }[] = [
   { section: 'files', label: 'Dateien', icon: <FolderRoundedIcon />, route: { view: 'files', path: '' } },
@@ -167,8 +169,11 @@ export default function Shell({ user, serverName, onLogout, refreshMe }: Props) 
     [user, serverName, setFavorite, refreshMe, upload, onUploaded],
   )
 
+  // Eingang nur in der Seitenleiste, unten wären fünf Einträge zu eng
   const nav = [
-    ...NAV,
+    NAV[0],
+    { section: 'inbox' as const, label: 'Eingang', icon: <MoveToInboxRoundedIcon />, route: { view: 'inbox' } as Route },
+    ...NAV.slice(1),
     { section: 'trash' as const, label: 'Papierkorb', icon: <DeleteRoundedIcon />, route: { view: 'trash' } as Route },
     { section: 'settings' as const, label: 'Einstellungen', icon: <SettingsRoundedIcon />, route: { view: 'settings' } as Route },
   ]
@@ -195,6 +200,9 @@ export default function Shell({ user, serverName, onLogout, refreshMe }: Props) 
       break
     case 'trash':
       view = <TrashView />
+      break
+    case 'inbox':
+      view = <InboxView />
       break
   }
 
@@ -313,6 +321,17 @@ export default function Shell({ user, serverName, onLogout, refreshMe }: Props) 
           <ListItemText>Passwort ändern</ListItemText>
         </MenuItem>
         {/* auf dem Handy nicht in der unteren Leiste */}
+        <MenuItem
+          onClick={() => {
+            navigate({ view: 'inbox' })
+            setAccountMenu(null)
+          }}
+        >
+          <ListItemIcon>
+            <MoveToInboxRoundedIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Eingang</ListItemText>
+        </MenuItem>
         <MenuItem
           onClick={() => {
             navigate({ view: 'trash' })

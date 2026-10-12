@@ -22,6 +22,12 @@ Schnelle, einfache Foto-, Video- und Datei-Verwaltung für den Heimserver – ei
 - Jeder Benutzer hat **Privat** (nur für ihn), alle teilen **Gemeinsam**; Speicherlimits pro Benutzer
 - **Netzlaufwerk (SMB)** mit denselben Logins: Windows-Explorer, macOS Finder, iPhone-Dateien-App
 
+**Automatisch sortieren & synchronisieren**
+- **Eingangs-Ordner**: Was in `Eingang` landet (Browser, Netzlaufwerk, Scanner), wird einsortiert und lässt sich mit einem Klick rückgängig machen
+  - Fotos und Videos nach Aufnahmedatum und Ort: `Fotos/2025/2025-08 Lissabon/` (Orte offline erkannt, ohne KI)
+  - Dokumente benennt eine **lokale KI**: `Dokumente/Rechnungen/2026-03-12 Stadtwerke München Stromrechnung.pdf`. Gescannte Briefe werden per Texterkennung gelesen, nichts verlässt das Haus
+- **Live-Sync** auf andere NAS im Haus: Regeln wie „Gemeinsam/Familie → Papas NAS“ oder „Privat von anna → Keller-NAS“, etwa eine Minute nach jeder Änderung, alte Stände bleiben unter `.versionen/`
+
 **Datensicherheit**
 - **Festplatten-Spiegel (RAID) mit Btrfs**: Platten im Browser auswählen, Spiegel anlegen, Zustand und SMART-Werte sehen, defekte Platte **im laufenden Betrieb tauschen** (Hot-Swap), erweitern, monatliche Datenprüfung (repariert stille Fehler)
 - **Backup auf andere NAS** im Haus per SMB, mit Zeitplan und Versionen (`.versionen/`)
@@ -83,6 +89,13 @@ Die Office-Vorschau braucht ca. 1 GB im Image. Wer darauf verzichtet, baut selbs
 
 Selbst gebaute Images nicht mit `install.sh` oder `docker compose pull` aktualisieren (das lädt wieder das offizielle Image), sondern: `git pull` und denselben `build`-Befehl erneut, dann `docker compose up -d`.
 
+### KI für den Eingangs-Ordner
+
+In der `.env` bei `COMPOSE_PROFILES` „ai“ ergänzen (z. B. `COMPOSE_PROFILES=disks,ai`) und `AI_URL=http://ai:11434` einkommentieren, dann `docker compose up -d`. Beim ersten Start lädt homevault das Sprachmodell (Standard `qwen2.5:3b`, ca. 2 GB). Den Fortschritt zeigt die Seite **Eingang**.
+- Läuft komplett lokal (Ollama), ohne Grafikkarte. Auf einem kleinen Server dauert ein Dokument etwa 30–90 Sekunden. Das passiert im Hintergrund mit niedriger Priorität.
+- Ohne KI werden Fotos trotzdem sortiert, Dokumente bleiben im Eingang liegen.
+- Scanner am besten als PDF in `Gemeinsam/Eingang` oder `Privat/<name>/Eingang` speichern lassen (SMB).
+
 ## Ordnerstruktur
 
 ```
@@ -108,6 +121,13 @@ Einstellungen → **Backup**: Ziel anlegen (Server, Freigabe, Ordner, Benutzer, 
 
 - **Einzelne Dateien zurückholen:** beim Ziel auf „Wiederherstellen“ – Stand wählen (aktuell oder älter), Dateien/Ordner auswählen, an den Originalort (nichts wird überschrieben) oder in einen neuen Ordner „Wiederhergestellt …“.
 - **Neuer Server nach Totalausfall:** homevault frisch installieren, im Assistenten „Aus Backup wiederherstellen“ wählen und das Backup-NAS angeben. Benutzer, Alben, Einstellungen und Dateien kommen zurück.
+
+## Live-Sync auf andere NAS
+
+1. Einstellungen → **Backup**: das NAS als Ziel anlegen (für reinen Sync ohne Bereiche und mit Zeitplan „manuell“). Optional „Benutzer dürfen ihren Privat-Ordner hierher synchronisieren“.
+2. Einstellungen → **Synchronisieren**: Regel „Quelle → Ziel“ anlegen. Admins wählen Quelle (Gemeinsam oder Privat eines Benutzers, optional Unterordner) und Zielordner. Benutzer wählen nur für ihren eigenen Privat-Ordner ein freigegebenes NAS, das Ziel ist dann fest `<ordner>/Benutzer/<name>`.
+
+Nur homevault → NAS. Auf dem NAS Gelöschtes oder Überschriebenes wandert nach `<ziel>/.versionen/<Zeitpunkt>/`. Zwei Regeln (oder Regel und Backup) können nie in denselben Ordner schreiben, und liegen im Zielordner schon fremde Dateien, fragt homevault vorher nach.
 
 ## Live Photos vom iPhone
 
@@ -152,4 +172,7 @@ Lokal für HEIC, Videos, Dokumente und Backup: `brew install libheif ffmpeg popp
 | `TZ` | `Europe/Berlin` | Zeitzone für Backup-Zeitpläne |
 | `INDEX_INTERVAL_MINUTES` | `10` | Wie oft der Medien-Index nach Änderungen sucht |
 | `COMPOSE_PROFILES`, `MEDIA_PROPAGATION`, `DISK_AGENT_URL`, `DISK_AGENT_TOKEN` | – | Festplatten-Verwaltung (siehe oben) |
+| `AI_URL`, `AI_MODEL` | –, `qwen2.5:3b` | Lokale KI für den Eingangs-Ordner (siehe oben) |
 | `ADMIN_USER`, `ADMIN_PASSWORD` | `admin`, – | Optional: ersten Admin ohne Assistent anlegen (nur wenn noch kein Benutzer existiert) |
+
+Ortsdaten: [GeoNames](https://www.geonames.org/), CC BY 4.0 (siehe `data/README.md`).
