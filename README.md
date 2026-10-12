@@ -129,6 +129,26 @@ Einstellungen → **Backup**: Ziel anlegen (Server, Freigabe, Ordner, Benutzer, 
 
 Nur homevault → NAS. Auf dem NAS Gelöschtes oder Überschriebenes wandert nach `<ziel>/.versionen/<Zeitpunkt>/`. Zwei Regeln (oder Regel und Backup) können nie in denselben Ordner schreiben, und liegen im Zielordner schon fremde Dateien, fragt homevault vorher nach.
 
+### Backup/Sync über einen zweiten Netzwerkadapter
+
+Pro NAS lässt sich unter Einstellungen → Backup ein **Netzwerkadapter** wählen, z. B. ein zweiter (USB-)LAN-Anschluss. Dann laufen Backup, Wiederherstellen und Live-Sync darüber, Uploads und Videos weiter über den ersten Anschluss. Die Web-App läuft dafür im Netzwerk des Servers (`network_mode: host`).
+
+Hängen beide Adapter im **selben Netz**, braucht der Server eine feste Adresse für den zweiten Adapter und eine Routing-Regel, sonst nimmt Linux immer nur einen Adapter. Beispiel für Debian (`/etc/network/interfaces.d/zweiter-adapter`, Adapter `enx…`, Adresse außerhalb des DHCP-Bereichs der FritzBox):
+
+```
+allow-hotplug enx0000cd2316bf
+iface enx0000cd2316bf inet manual
+    up ip link set dev $IFACE up
+    up ip addr add 192.168.178.250/24 dev $IFACE noprefixroute
+    up ip route replace 192.168.178.0/24 dev $IFACE src 192.168.178.250 table 100
+    up ip route replace default via 192.168.178.1 dev $IFACE onlink table 100
+    up ip rule add from 192.168.178.250 lookup 100 priority 100
+    down ip rule del from 192.168.178.250 lookup 100 priority 100 || true
+    down ip addr flush dev $IFACE
+```
+
+Dazu `net.ipv4.conf.all.arp_ignore=1` und `net.ipv4.conf.all.arp_announce=2` (z. B. in `/etc/sysctl.d/`). Ohne Kabel am gewählten Adapter läuft das Backup über den normalen Weg weiter.
+
 ## Live Photos vom iPhone
 
 Browser-Uploads vom iPhone enthalten nur das Foto. Für komplette Live Photos über das Netzlaufwerk speichern (Dateien-App) oder am Mac „Unbearbeitetes Original exportieren“.
